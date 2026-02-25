@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:nearby_connections/nearby_connections.dart';
 import '../models/message.dart';
 import '../services/storage_service.dart';
+import '../services/permission_service.dart';
 
 /// Represents a peer connected via Nearby Connections API
 class MeshPeer {
@@ -55,6 +56,12 @@ class MeshController extends ChangeNotifier {
   /// Starts the "Vibe Coding" Dual Loop: Advertising & Discovering
   /// simultaneously to build the interconnected cluster.
   Future<void> startMesh() async {
+    // 1. Check and request permissions
+    final hasPerms = await PermissionService.requestPermissions();
+    if (!hasPerms) {
+      debugPrint('[MESH] Permissions denied. Cannot start mesh.');
+    }
+
     final username = StorageService.getUsername() ?? 'anon';
 
     // Start Beacon (Advertising)
