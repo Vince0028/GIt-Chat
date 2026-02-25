@@ -2,8 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'theme/app_theme.dart';
 import 'services/storage_service.dart';
-import 'services/ble_service.dart';
-import 'services/mesh_service.dart';
+import 'services/mesh_controller.dart';
 import 'screens/onboarding_screen.dart';
 import 'screens/chat_screen.dart';
 
@@ -24,45 +23,53 @@ void main() async {
   await StorageService.init();
   final hasUser = StorageService.getUsername() != null;
 
-  runApp(BitChatApp(showOnboarding: !hasUser));
+  runApp(GitChatApp(showOnboarding: !hasUser));
 }
 
-class BitChatApp extends StatefulWidget {
+class GitChatApp extends StatefulWidget {
   final bool showOnboarding;
 
-  const BitChatApp({super.key, required this.showOnboarding});
+  const GitChatApp({super.key, required this.showOnboarding});
 
   @override
-  State<BitChatApp> createState() => _BitChatAppState();
+  State<GitChatApp> createState() => _GitChatAppState();
 }
 
-class _BitChatAppState extends State<BitChatApp> {
-  late final BLEService _bleService;
-  late final MeshService _meshService;
+class _GitChatAppState extends State<GitChatApp> {
+  late final MeshController _meshController;
 
   @override
   void initState() {
     super.initState();
-    _bleService = BLEService();
-    _meshService = MeshService(_bleService);
+    _meshController = MeshController();
+
+    // Auto-start the mesh when the app launches (if user has onboarded)
+    if (!widget.showOnboarding) {
+      _startMeshNetwork();
+    }
+  }
+
+  Future<void> _startMeshNetwork() async {
+    // Wait a tiny bit for UI to mount
+    await Future.delayed(const Duration(milliseconds: 500));
+    await _meshController.startMesh();
   }
 
   @override
   void dispose() {
-    _meshService.dispose();
-    _bleService.dispose();
+    _meshController.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'BitChat',
+      title: 'GitChat',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.darkTheme,
       home: widget.showOnboarding
-          ? const OnboardingScreen()
-          : ChatScreen(bleService: _bleService),
+          ? OnboardingScreen(onComplete: _startMeshNetwork)
+          : ChatScreen(meshController: _meshController),
     );
   }
 }

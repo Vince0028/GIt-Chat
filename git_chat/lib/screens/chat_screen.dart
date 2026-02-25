@@ -6,13 +6,12 @@ import 'package:uuid/uuid.dart';
 import '../theme/app_theme.dart';
 import '../models/message.dart';
 import '../services/storage_service.dart';
-import '../services/ble_service.dart';
-import 'discovery_screen.dart';
+import '../services/mesh_controller.dart';
 
 class ChatScreen extends StatefulWidget {
-  final BLEService? bleService;
+  final MeshController? meshController;
 
-  const ChatScreen({super.key, this.bleService});
+  const ChatScreen({super.key, this.meshController});
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -32,14 +31,14 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     _username = StorageService.getUsername() ?? 'anon';
     _loadMessages();
 
-    // Listen for incoming BLE messages
-    _incomingSub = widget.bleService?.incomingMessages.listen((_) {
+    // Listen for incoming Mesh messages
+    _incomingSub = widget.meshController?.incomingMessages.listen((_) {
       _loadMessages();
     });
-    widget.bleService?.addListener(_onBLEUpdate);
+    widget.meshController?.addListener(_onMeshUpdate);
   }
 
-  void _onBLEUpdate() {
+  void _onMeshUpdate() {
     if (mounted) setState(() {});
   }
 
@@ -79,8 +78,8 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
 
     StorageService.saveMessage(message);
 
-    // Also broadcast over BLE
-    widget.bleService?.broadcastMessage(message);
+    // Also broadcast over Mesh
+    widget.meshController?.broadcastLocalMessage(message);
 
     _msgController.clear();
     _loadMessages();
@@ -89,7 +88,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   @override
   void dispose() {
     _incomingSub?.cancel();
-    widget.bleService?.removeListener(_onBLEUpdate);
+    widget.meshController?.removeListener(_onMeshUpdate);
     _msgController.dispose();
     _scrollController.dispose();
     super.dispose();
@@ -123,7 +122,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           const Icon(Icons.terminal, color: AppTheme.green, size: 20),
           const SizedBox(width: 8),
           Text(
-            'BitChat',
+            'GitChat',
             style: GoogleFonts.firaCode(
               color: AppTheme.green,
               fontSize: 18,
@@ -153,15 +152,16 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           icon: const Icon(Icons.bluetooth_searching, color: AppTheme.cyan),
           tooltip: 'Discover Peers',
           onPressed: () {
-            if (widget.bleService != null) {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) =>
-                      DiscoveryScreen(bleService: widget.bleService!),
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  '> cluster mesh is active in background...',
+                  style: GoogleFonts.firaCode(fontSize: 12),
                 ),
-              );
-            }
+                backgroundColor: AppTheme.bgCard,
+                behavior: SnackBarBehavior.floating,
+              ),
+            );
           },
         ),
       ],
@@ -205,17 +205,17 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           ),
           const Spacer(),
           Icon(
-            Icons.bluetooth,
+            Icons.wifi_tethering,
             size: 14,
-            color: (widget.bleService?.connectedPeerCount ?? 0) > 0
+            color: (widget.meshController?.connectedPeers.length ?? 0) > 0
                 ? AppTheme.cyan
                 : AppTheme.textMuted,
           ),
           const SizedBox(width: 4),
           Text(
-            '${widget.bleService?.connectedPeerCount ?? 0} peers',
+            '${widget.meshController?.connectedPeers.length ?? 0} peers',
             style: GoogleFonts.firaCode(
-              color: (widget.bleService?.connectedPeerCount ?? 0) > 0
+              color: (widget.meshController?.connectedPeers.length ?? 0) > 0
                   ? AppTheme.cyan
                   : AppTheme.textMuted,
               fontSize: 11,

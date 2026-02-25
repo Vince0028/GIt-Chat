@@ -32,13 +32,13 @@ dependencies:
     sdk: flutter
 
   cupertino_icons: ^1.0.8
-  flutter_blue_plus: ^1.35.2
   permission_handler: ^11.3.1
   hive: ^2.2.3
   hive_flutter: ^1.1.0
   uuid: ^4.5.1
   encrypt: ^5.0.3
   google_fonts: ^6.2.1
+  nearby_connections: ^4.3.0
 
 dev_dependencies:
   flutter_test:

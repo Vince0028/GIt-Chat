@@ -6,7 +6,9 @@ import '../services/storage_service.dart';
 import 'chat_screen.dart';
 
 class OnboardingScreen extends StatefulWidget {
-  const OnboardingScreen({super.key});
+  final VoidCallback? onComplete;
+
+  const OnboardingScreen({super.key, this.onComplete});
 
   @override
   State<OnboardingScreen> createState() => _OnboardingScreenState();
@@ -21,7 +23,7 @@ class _OnboardingScreenState extends State<OnboardingScreen>
   bool _showCursor = true;
   String _typedPrefix = '';
   int _prefixIndex = 0;
-  final String _prefix = '> initializing bitchat...';
+  final String _prefix = '> initializing gitchat...';
 
   @override
   void initState() {
@@ -96,7 +98,7 @@ class _OnboardingScreenState extends State<OnboardingScreen>
               // ASCII art logo
               Text(
                 '╔══════════════════╗\n'
-                '║    BIT  CHAT     ║\n'
+                '║    GIT  CHAT     ║\n'
                 '╚══════════════════╝',
                 style: GoogleFonts.firaCode(
                   color: AppTheme.green,
