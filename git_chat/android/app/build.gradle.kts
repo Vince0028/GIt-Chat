@@ -19,6 +19,14 @@ android {
         jvmTarget = JavaVersion.VERSION_17.toString()
     }
 
+    // Force Google Nearby SDK 18.5.0 — fixes Android 12/13/14 discovery bugs
+    // The nearby_connections Flutter plugin bundles an older broken version
+    configurations.all {
+        resolutionStrategy {
+            force("com.google.android.gms:play-services-nearby:18.5.0")
+        }
+    }
+
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.example.git_chat"

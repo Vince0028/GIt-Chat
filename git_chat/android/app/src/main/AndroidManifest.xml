@@ -9,6 +9,10 @@
     <!-- Location is still required for Nearby Connections discovery on Android < 12 -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+    <!-- Required for Nearby Connections foreground service on Android 13/14 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE"
+        tools:targetApi="34"/>
     <!-- Wi-Fi Direct — required for Nearby Connections P2P transport -->
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE"/>
@@ -49,6 +53,11 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+        <!-- Nearby Connections foreground service — required for Android 13/14 -->
+        <service
+            android:name="com.google.android.gms.nearby.connection.NearbyConnectionsService"
+            android:foregroundServiceType="connectedDevice"
+            android:exported="false" />
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and

@@ -219,11 +219,14 @@ class MeshController extends ChangeNotifier {
       },
       onPayloadTransferUpdate: (endpointId, payloadTransferUpdate) {},
     );
+    // Preserve isConnected if _onConnectionResult already fired before this await completed
+    final alreadyConnected = _peers[id]?.isConnected ?? false;
     _peers[id] = MeshPeer(
       endpointId: id,
       endpointName: info.endpointName,
-      isConnected: false,
+      isConnected: alreadyConnected,
     );
+    if (alreadyConnected) notifyListeners();
   }
 
   void _onConnectionResult(String id, Status status) {
