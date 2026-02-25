@@ -36,6 +36,20 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   String _username = '';
   StreamSubscription<ChatMessage>? _incomingSub;
 
+  void _showTopNotification(String message, {Color color = AppTheme.cyan, IconData icon = Icons.bluetooth}) {
+    final overlay = Overlay.of(context);
+    late OverlayEntry entry;
+    entry = OverlayEntry(
+      builder: (_) => _TopNotification(
+        message: message,
+        color: color,
+        icon: icon,
+        onDone: () => entry.remove(),
+      ),
+    );
+    overlay.insert(entry);
+  }
+
   @override
   void initState() {
     super.initState();
@@ -204,20 +218,25 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           ),
         IconButton(
           icon: const Icon(Icons.bluetooth_searching, color: AppTheme.cyan),
-          tooltip: 'Mesh Status',
-          onPressed: () {
-            final peers =
-                widget.meshController?.connectedPeers.length ?? 0;
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text(
-                  '> mesh active • $peers peers connected',
-                  style: GoogleFonts.firaCode(fontSize: 12),
-                ),
-                backgroundColor: AppTheme.bgCard,
-                behavior: SnackBarBehavior.floating,
-              ),
-            );
+          tooltip: 'Reconnect peers',
+          onPressed: () async {
+            final peers = widget.meshController?.connectedPeers.length ?? 0;
+            if (peers > 0) {
+              _showTopNotification(
+                '$peers peer(s) connected',
+                color: AppTheme.cyan,
+                icon: Icons.bluetooth_connected,
+              );
+            } else {
+              _showTopNotification(
+                'Searching for peers...',
+                color: AppTheme.orange,
+                icon: Icons.bluetooth_searching,
+              );
+              widget.meshController?.stopMesh();
+              await Future.delayed(const Duration(milliseconds: 500));
+              await widget.meshController?.startMesh();
+            }
           },
         ),
       ],
@@ -486,5 +505,108 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     final h = dt.hour.toString().padLeft(2, '0');
     final m = dt.minute.toString().padLeft(2, '0');
     return '$h:$m';
+  }
+}
+
+// ── Top Notification Overlay ─────────────────────────────────────────────────
+
+class _TopNotification extends StatefulWidget {
+  final String message;
+  final Color color;
+  final IconData icon;
+  final VoidCallback onDone;
+
+  const _TopNotification({
+    required this.message,
+    required this.color,
+    required this.icon,
+    required this.onDone,
+  });
+
+  @override
+  State<_TopNotification> createState() => _TopNotificationState();
+}
+
+class _TopNotificationState extends State<_TopNotification>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _ctrl;
+  late Animation<Offset> _slide;
+  late Animation<double> _fade;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 350),
+    );
+    _slide = Tween<Offset>(
+      begin: const Offset(0, -1),
+      end: Offset.zero,
+    ).animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeOut));
+    _fade = CurvedAnimation(parent: _ctrl, curve: Curves.easeOut);
+
+    _ctrl.forward();
+
+    // Auto-dismiss after 2.5s
+    Future.delayed(const Duration(milliseconds: 2500), () {
+      if (mounted) {
+        _ctrl.reverse().then((_) => widget.onDone());
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Positioned(
+      top: MediaQuery.of(context).padding.top + 12,
+      left: 16,
+      right: 16,
+      child: SlideTransition(
+        position: _slide,
+        child: FadeTransition(
+          opacity: _fade,
+          child: Material(
+            color: Colors.transparent,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: BoxDecoration(
+                color: AppTheme.bgCard,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: widget.color, width: 1.5),
+                boxShadow: [
+                  BoxShadow(
+                    color: widget.color.withValues(alpha: 0.2),
+                    blurRadius: 12,
+                    spreadRadius: 2,
+                  ),
+                ],
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(widget.icon, color: widget.color, size: 18),
+                  const SizedBox(width: 10),
+                  Text(
+                    widget.message,
+                    style: GoogleFonts.firaCode(
+                      color: AppTheme.textPrimary,
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }

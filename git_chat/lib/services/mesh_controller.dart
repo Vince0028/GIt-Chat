@@ -52,7 +52,6 @@ class MeshController extends ChangeNotifier {
   final Map<String, MeshPeer> _peers = {};
   bool _isAdvertising = false;
   bool _isDiscovering = false;
-  Timer? _rediscoveryTimer;
 
   final StreamController<ChatMessage> _incomingMessages =
       StreamController<ChatMessage>.broadcast();
@@ -82,7 +81,6 @@ class MeshController extends ChangeNotifier {
   @override
   void dispose() {
     stopMesh();
-    _rediscoveryTimer?.cancel();
     _incomingMessages.close();
     _incomingGroupInvites.close();
     _passwordProtectedInvites.close();
@@ -124,8 +122,17 @@ class MeshController extends ChangeNotifier {
         strategy,
         onEndpointFound: (id, name, serviceId) async {
           debugPrint(
-            '[MESH] Found peer: $name ($id). Requesting connection...',
+            '[MESH] Found peer: $name ($id). Delaying to avoid collision...',
           );
+
+          if (_peers.containsKey(id) && _peers[id]!.isConnected) return;
+
+          // CRITICAL FIX: Random jitter (500-2000ms) to prevent P2P_CLUSTER
+          // simultaneous connection collisions (both devices requesting at the exact same millisecond)
+          await Future.delayed(
+            Duration(milliseconds: 500 + Random().nextInt(1500)),
+          );
+
           try {
             await Nearby().requestConnection(
               username,
@@ -148,55 +155,10 @@ class MeshController extends ChangeNotifier {
       debugPrint('[MESH] Discovery failed: $e');
     }
 
-    // Periodically restart discovery to find new peers
-    _rediscoveryTimer?.cancel();
-    _rediscoveryTimer = Timer.periodic(
-      const Duration(seconds: 30),
-      (_) => _restartDiscovery(),
-    );
-
     notifyListeners();
   }
 
-  /// Restart discovery to pick up new peers without stopping advertising
-  Future<void> _restartDiscovery() async {
-    if (!_isAdvertising && !_isDiscovering) return;
-
-    final username = StorageService.getUsername() ?? 'anon';
-    try {
-      Nearby().stopDiscovery();
-      await Future.delayed(const Duration(milliseconds: 500));
-      _isDiscovering = await Nearby().startDiscovery(
-        username,
-        strategy,
-        onEndpointFound: (id, name, serviceId) async {
-          if (_peers.containsKey(id) && _peers[id]!.isConnected) return;
-          debugPrint('[MESH] Rediscovered peer: $name ($id)');
-          try {
-            await Nearby().requestConnection(
-              username,
-              id,
-              onConnectionInitiated: _onConnectionInit,
-              onConnectionResult: _onConnectionResult,
-              onDisconnected: _onDisconnected,
-            );
-          } catch (e) {
-            debugPrint('[MESH] Reconnection request failed: $e');
-          }
-        },
-        onEndpointLost: (id) {
-          debugPrint('[MESH] Lost peer from radar: $id');
-        },
-        serviceId: _serviceId,
-      );
-      debugPrint('[MESH] Rediscovery cycle complete');
-    } catch (e) {
-      debugPrint('[MESH] Rediscovery failed: $e');
-    }
-  }
-
   void stopMesh() {
-    _rediscoveryTimer?.cancel();
     Nearby().stopAdvertising();
     Nearby().stopDiscovery();
     Nearby().stopAllEndpoints();
