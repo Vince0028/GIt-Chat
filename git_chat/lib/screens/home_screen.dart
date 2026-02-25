@@ -23,6 +23,7 @@ class _HomeScreenState extends State<HomeScreen> {
   List<MeshGroup> _groups = [];
   String _username = '';
   StreamSubscription<MeshGroup>? _inviteSub;
+  StreamSubscription<MeshGroup>? _passwordInviteSub;
   bool _permissionShown = false;
 
   @override
@@ -35,6 +36,12 @@ class _HomeScreenState extends State<HomeScreen> {
     _inviteSub = widget.meshController.incomingGroupInvites.listen((group) {
       _loadGroups();
       _showInviteSnackbar(group);
+    });
+
+    // Listen for password-protected group invites
+    _passwordInviteSub =
+        widget.meshController.passwordProtectedInvites.listen((group) {
+      _showPasswordDialog(group);
     });
 
     widget.meshController.addListener(_onMeshUpdate);
@@ -82,6 +89,130 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  void _showPasswordDialog(MeshGroup group) {
+    if (!mounted) return;
+    final passwordController = TextEditingController();
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.bgCard,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: const BorderSide(color: AppTheme.border),
+        ),
+        title: Row(
+          children: [
+            const Icon(Icons.lock_outline, color: AppTheme.orange, size: 20),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'Join "${group.name}"',
+                style: GoogleFonts.firaCode(
+                  color: AppTheme.textPrimary,
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'This group is password-protected.\nEnter the password to join.',
+              style: GoogleFonts.firaCode(
+                color: AppTheme.textSecondary,
+                fontSize: 11,
+              ),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: passwordController,
+              obscureText: true,
+              autofocus: true,
+              style: GoogleFonts.firaCode(
+                color: AppTheme.textPrimary,
+                fontSize: 14,
+              ),
+              decoration: InputDecoration(
+                hintText: 'password',
+                prefixIcon:
+                    const Icon(Icons.key, color: AppTheme.orange, size: 18),
+                hintStyle: GoogleFonts.firaCode(
+                  color: AppTheme.textMuted,
+                  fontSize: 14,
+                ),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: Text(
+              'CANCEL',
+              style: GoogleFonts.firaCode(
+                color: AppTheme.textMuted,
+                fontSize: 12,
+              ),
+            ),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              final entered = passwordController.text.trim();
+              if (entered == group.password) {
+                // Password correct — save and join
+                final username = StorageService.getUsername() ?? 'anon';
+                if (!group.members.contains(username)) {
+                  group.members.add(username);
+                }
+                StorageService.saveGroup(group);
+                _loadGroups();
+                Navigator.of(ctx).pop();
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      '> joined "${group.name}" successfully',
+                      style: GoogleFonts.firaCode(fontSize: 12),
+                    ),
+                    backgroundColor: AppTheme.bgCard,
+                    behavior: SnackBarBehavior.floating,
+                  ),
+                );
+              } else {
+                // Wrong password
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      '> wrong password!',
+                      style: GoogleFonts.firaCode(fontSize: 12),
+                    ),
+                    backgroundColor: AppTheme.red.withValues(alpha: 0.8),
+                    behavior: SnackBarBehavior.floating,
+                  ),
+                );
+              }
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.orange,
+            ),
+            child: Text(
+              'JOIN',
+              style: GoogleFonts.firaCode(
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _openGroupChat(MeshGroup group) {
     Navigator.of(context).push(
       MaterialPageRoute(
@@ -99,6 +230,7 @@ class _HomeScreenState extends State<HomeScreen> {
       MaterialPageRoute(
         builder: (_) => ChatScreen(
           meshController: widget.meshController,
+          isGlobalChat: true,
         ),
       ),
     );
@@ -120,6 +252,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     _inviteSub?.cancel();
+    _passwordInviteSub?.cancel();
     widget.meshController.removeListener(_onMeshUpdate);
     super.dispose();
   }
@@ -208,7 +341,7 @@ class _HomeScreenState extends State<HomeScreen> {
               padding: const EdgeInsets.all(16),
               children: [
                 // Broadcast chat tile
-                _buildBroadcastTile(),
+                _buildGlobalChatTile(),
                 const SizedBox(height: 20),
 
                 // Groups section header
@@ -308,7 +441,7 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildBroadcastTile() {
+  Widget _buildGlobalChatTile() {
     final broadcastMsgs = StorageService.getMessages();
     final lastMsg =
         broadcastMsgs.isNotEmpty ? broadcastMsgs.last.body : 'No messages yet';
@@ -352,7 +485,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   Row(
                     children: [
                       Text(
-                        'Broadcast',
+                        'Global Chat',
                         style: GoogleFonts.firaCode(
                           color: AppTheme.textPrimary,
                           fontSize: 14,
@@ -370,7 +503,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           borderRadius: BorderRadius.circular(4),
                         ),
                         child: Text(
-                          'PUBLIC',
+                          'GLOBAL',
                           style: GoogleFonts.firaCode(
                             color: AppTheme.green,
                             fontSize: 8,
@@ -457,13 +590,29 @@ class _HomeScreenState extends State<HomeScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    group.name,
-                    style: GoogleFonts.firaCode(
-                      color: AppTheme.textPrimary,
-                      fontSize: 13,
-                      fontWeight: FontWeight.bold,
-                    ),
+                  Row(
+                    children: [
+                      Flexible(
+                        child: Text(
+                          group.name,
+                          style: GoogleFonts.firaCode(
+                            color: AppTheme.textPrimary,
+                            fontSize: 13,
+                            fontWeight: FontWeight.bold,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      if (group.password != null &&
+                          group.password!.isNotEmpty) ...[
+                        const SizedBox(width: 6),
+                        const Icon(
+                          Icons.lock,
+                          color: AppTheme.orange,
+                          size: 12,
+                        ),
+                      ],
+                    ],
                   ),
                   const SizedBox(height: 2),
                   Text(

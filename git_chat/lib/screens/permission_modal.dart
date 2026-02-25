@@ -65,14 +65,10 @@ class _PermissionModalContentState extends State<_PermissionModalContent>
   @override
   Widget build(BuildContext context) {
     return Container(
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         color: AppTheme.bgCard,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-        border: Border(
-          top: BorderSide(color: AppTheme.green, width: 2),
-          left: BorderSide(color: AppTheme.border, width: 1),
-          right: BorderSide(color: AppTheme.border, width: 1),
-        ),
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+        border: Border.all(color: AppTheme.border, width: 1),
       ),
       padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
       child: Column(

@@ -12,12 +12,14 @@ class ChatScreen extends StatefulWidget {
   final MeshController? meshController;
   final String? groupId;
   final String? groupName;
+  final bool isGlobalChat;
 
   const ChatScreen({
     super.key,
     this.meshController,
     this.groupId,
     this.groupName,
+    this.isGlobalChat = false,
   });
 
   bool get isGroupChat => groupId != null && groupId!.isNotEmpty;
@@ -149,7 +151,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           ),
           const SizedBox(width: 8),
           Text(
-            widget.isGroupChat ? widget.groupName! : 'GitChat',
+            widget.isGroupChat
+                ? widget.groupName!
+                : (widget.isGlobalChat ? 'Global Chat' : 'GitChat'),
             style: GoogleFonts.firaCode(
               color: widget.isGroupChat ? AppTheme.purple : AppTheme.green,
               fontSize: 16,
@@ -165,7 +169,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
               borderRadius: BorderRadius.circular(4),
             ),
             child: Text(
-              widget.isGroupChat ? 'GROUP' : 'PUBLIC',
+              widget.isGroupChat ? 'GROUP' : 'GLOBAL',
               style: GoogleFonts.firaCode(
                 color:
                     widget.isGroupChat ? AppTheme.purple : AppTheme.green,
@@ -433,7 +437,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                 decoration: InputDecoration(
                   hintText: widget.isGroupChat
                       ? 'message ${widget.groupName}...'
-                      : 'broadcast message...',
+                      : 'message global chat...',
                   filled: false,
                   border: InputBorder.none,
                   enabledBorder: InputBorder.none,

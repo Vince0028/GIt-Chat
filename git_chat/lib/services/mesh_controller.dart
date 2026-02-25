@@ -61,6 +61,9 @@ class MeshController extends ChangeNotifier {
   final StreamController<MeshGroup> _incomingGroupInvites =
       StreamController<MeshGroup>.broadcast();
 
+  final StreamController<MeshGroup> _passwordProtectedInvites =
+      StreamController<MeshGroup>.broadcast();
+
   final Set<String> _seenMessageIds = {};
 
   // ── Getters ──────────────────────────────────────────
@@ -72,6 +75,8 @@ class MeshController extends ChangeNotifier {
   bool get isMeshActive => _isAdvertising || _isDiscovering;
   Stream<ChatMessage> get incomingMessages => _incomingMessages.stream;
   Stream<MeshGroup> get incomingGroupInvites => _incomingGroupInvites.stream;
+  Stream<MeshGroup> get passwordProtectedInvites =>
+      _passwordProtectedInvites.stream;
 
   // ── Lifecycle ────────────────────────────────────────
 
@@ -80,6 +85,7 @@ class MeshController extends ChangeNotifier {
     stopMesh();
     _incomingMessages.close();
     _incomingGroupInvites.close();
+    _passwordProtectedInvites.close();
     super.dispose();
   }
 
@@ -281,6 +287,19 @@ class MeshController extends ChangeNotifier {
 
   void _handleGroupInvite(MeshGroup group, String sourceId) {
     debugPrint('[MESH] Received group invite: ${group.name} from $sourceId');
+
+    // If already a member, skip
+    if (StorageService.isGroupMember(group.id)) return;
+
+    // If group has a password, don't auto-join — ask user first
+    if (group.password != null && group.password!.isNotEmpty) {
+      debugPrint('[MESH] Group "${group.name}" is password-protected.');
+      _passwordProtectedInvites.add(group);
+      notifyListeners();
+      return;
+    }
+
+    // No password — auto-join
     StorageService.saveGroup(group);
     _incomingGroupInvites.add(group);
     notifyListeners();

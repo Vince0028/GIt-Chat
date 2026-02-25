@@ -22,6 +22,9 @@ class MeshGroup extends HiveObject {
   @HiveField(5)
   final String symmetricKey; // Shared secret for the group (base64)
 
+  @HiveField(6)
+  final String? password; // Optional password to join this group
+
   MeshGroup({
     required this.id,
     required this.name,
@@ -29,6 +32,7 @@ class MeshGroup extends HiveObject {
     required this.createdAt,
     required this.members,
     required this.symmetricKey,
+    this.password,
   });
 
   /// Convert to Map for BLE transmission (invites)
@@ -40,6 +44,7 @@ class MeshGroup extends HiveObject {
       'createdAt': createdAt.millisecondsSinceEpoch,
       'members': members,
       'symmetricKey': symmetricKey,
+      'password': password,
     };
   }
 
@@ -51,6 +56,7 @@ class MeshGroup extends HiveObject {
       createdAt: DateTime.fromMillisecondsSinceEpoch(map['createdAt'] as int),
       members: List<String>.from(map['members'] as List),
       symmetricKey: map['symmetricKey'] as String,
+      password: map['password'] as String?,
     );
   }
 }

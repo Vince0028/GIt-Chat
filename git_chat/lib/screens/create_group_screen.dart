@@ -17,12 +17,29 @@ class CreateGroupScreen extends StatefulWidget {
 
 class _CreateGroupScreenState extends State<CreateGroupScreen> {
   final _nameController = TextEditingController();
+  final _passwordController = TextEditingController();
   bool _isCreating = false;
   bool _broadcastInvite = true;
+  bool _usePassword = false;
 
   void _createGroup() async {
     final name = _nameController.text.trim();
     if (name.isEmpty) return;
+
+    // Validate password if toggle is on
+    if (_usePassword && _passwordController.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '> enter a password or disable the toggle',
+            style: GoogleFonts.firaCode(fontSize: 12),
+          ),
+          backgroundColor: AppTheme.red.withValues(alpha: 0.8),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
 
     setState(() => _isCreating = true);
     HapticFeedback.mediumImpact();
@@ -38,6 +55,7 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
       createdAt: DateTime.now(),
       members: [username],
       symmetricKey: key,
+      password: _usePassword ? _passwordController.text.trim() : null,
     );
 
     // Save locally
@@ -56,6 +74,7 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
   @override
   void dispose() {
     _nameController.dispose();
+    _passwordController.dispose();
     super.dispose();
   }
 
@@ -185,6 +204,96 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
             ),
             const Divider(color: AppTheme.border, height: 1),
             const SizedBox(height: 20),
+
+            // Password toggle
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: AppTheme.bgCard,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: AppTheme.border),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.lock_outline, color: AppTheme.orange, size: 18),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Password protected',
+                          style: GoogleFonts.firaCode(
+                            color: AppTheme.textPrimary,
+                            fontSize: 11,
+                          ),
+                        ),
+                        Text(
+                          'peers must enter password to join',
+                          style: GoogleFonts.firaCode(
+                            color: AppTheme.textMuted,
+                            fontSize: 9,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Switch(
+                    value: _usePassword,
+                    onChanged: (v) => setState(() => _usePassword = v),
+                    activeThumbColor: AppTheme.orange,
+                  ),
+                ],
+              ),
+            ),
+
+            // Password input (shown when toggle is on)
+            if (_usePassword) ...[
+              const SizedBox(height: 12),
+              Text(
+                '> group password:',
+                style: GoogleFonts.firaCode(
+                  color: AppTheme.textSecondary,
+                  fontSize: 12,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Text(
+                    '\$ ',
+                    style: GoogleFonts.firaCode(
+                      color: AppTheme.orange,
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  Expanded(
+                    child: TextField(
+                      controller: _passwordController,
+                      obscureText: true,
+                      style: GoogleFonts.firaCode(
+                        color: AppTheme.textPrimary,
+                        fontSize: 16,
+                      ),
+                      decoration: InputDecoration(
+                        hintText: 'enter password',
+                        filled: false,
+                        border: InputBorder.none,
+                        enabledBorder: InputBorder.none,
+                        focusedBorder: InputBorder.none,
+                        hintStyle: GoogleFonts.firaCode(
+                          color: AppTheme.textMuted,
+                          fontSize: 16,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const Divider(color: AppTheme.border, height: 1),
+            ],
+            const SizedBox(height: 16),
 
             // Broadcast toggle
             Container(

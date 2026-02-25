@@ -23,13 +23,14 @@ class MeshGroupAdapter extends TypeAdapter<MeshGroup> {
       createdAt: fields[3] as DateTime,
       members: (fields[4] as List).cast<String>(),
       symmetricKey: fields[5] as String,
+      password: fields[6] as String?,
     );
   }
 
   @override
   void write(BinaryWriter writer, MeshGroup obj) {
     writer
-      ..writeByte(6)
+      ..writeByte(7)
       ..writeByte(0)
       ..write(obj.id)
       ..writeByte(1)
@@ -41,7 +42,9 @@ class MeshGroupAdapter extends TypeAdapter<MeshGroup> {
       ..writeByte(4)
       ..write(obj.members)
       ..writeByte(5)
-      ..write(obj.symmetricKey);
+      ..write(obj.symmetricKey)
+      ..writeByte(6)
+      ..write(obj.password);
   }
 
   @override
