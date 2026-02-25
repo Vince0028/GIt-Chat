@@ -3,45 +3,74 @@ import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 class PermissionService {
-  /// Request all necessary permissions for Nearby Connections (Mesh Networking)
+  /// Request all necessary permissions for Nearby Connections (Mesh Networking).
+  /// Returns true only if all critical permissions are granted.
   static Future<bool> requestPermissions() async {
     if (!Platform.isAndroid) return true;
 
-    await [
+    // Request all needed permissions at once
+    final statuses = await [
       Permission.location, // Required for Android < 12 and Wi-Fi Direct
       Permission.bluetoothScan, // Required for Android 12+
       Permission.bluetoothConnect, // Required for Android 12+
       Permission.bluetoothAdvertise, // Required for Android 12+
-      Permission.nearbyWifiDevices, // Required for Android 13+ Wi-Fi Direct
+      Permission.nearbyWifiDevices, // Required for Android 13+
     ].request();
 
-    // We consider it a success if most critical permissions are granted.
-    // Some older devices won't have the newer permissions, which returns 'permanentlyDenied' or 'restricted'
-    // but we can still operate.
+    // Check location service is enabled (not just the permission — the GPS toggle)
+    final locationEnabled = await Permission.location.serviceStatus.isEnabled;
+    if (!locationEnabled) {
+      debugPrint(
+        '[PERMS] ⚠️ Location services are OFF — BLE scanning will NOT work!',
+      );
+    }
+
+    // Determine minimum required set: location OR nearbyWifi + bluetooth
+    final locationGranted = statuses[Permission.location]?.isGranted ?? false;
+    final btScanGranted =
+        statuses[Permission.bluetoothScan]?.isGranted ?? false;
+    final btConnectGranted =
+        statuses[Permission.bluetoothConnect]?.isGranted ?? false;
+    final btAdvertiseGranted =
+        statuses[Permission.bluetoothAdvertise]?.isGranted ?? false;
+
+    final bluetoothOk = btScanGranted && btConnectGranted && btAdvertiseGranted;
+
+    if (!bluetoothOk) {
+      debugPrint('[PERMS] ❌ Bluetooth permissions denied — cannot start mesh.');
+      return false;
+    }
+    if (!locationGranted) {
+      debugPrint(
+        '[PERMS] ❌ Location permission denied — discovery may fail on Android < 12.',
+      );
+      return false;
+    }
+    if (!locationEnabled) {
+      debugPrint('[PERMS] ❌ Location service disabled — discovery will fail.');
+      return false;
+    }
+
+    debugPrint('[PERMS] ✅ All permissions granted.');
     return true;
   }
 
-  /// Show a dialog reminding the user to turn on Bluetooth and Wi-Fi
-  static Future<bool> ensureRadiosOn(BuildContext context) async {
-    // With `nearby_connections`, the underlying Android API will automatically prompt
-    // the user to turn on Bluetooth/Wi-Fi when we start advertising/discovering if needed.
-    // However, it's good practice to remind them.
-    bool radioOk = true;
+  /// Returns a human-readable list of what is missing (for UI display)
+  static Future<List<String>> getMissingPermissions() async {
+    if (!Platform.isAndroid) return [];
+    final missing = <String>[];
 
-    // For now we'll assume it's OK and rely on the OS prompts during startAdvertising
-    return radioOk;
-  }
+    if (!await Permission.location.isGranted) missing.add('Location');
+    if (!await Permission.bluetoothScan.isGranted)
+      missing.add('Bluetooth Scan');
+    if (!await Permission.bluetoothConnect.isGranted)
+      missing.add('Bluetooth Connect');
+    if (!await Permission.bluetoothAdvertise.isGranted)
+      missing.add('Bluetooth Advertise');
 
-  /// Check all permissions at once
-  static Future<bool> checkAndRequestAll(BuildContext context) async {
-    final permsOk = await requestPermissions();
-    if (!permsOk) return false;
+    final locationEnabled = await Permission.location.serviceStatus.isEnabled;
+    if (!locationEnabled) missing.add('Location Services (GPS toggle)');
 
-    if (context.mounted) {
-      final radiosOn = await ensureRadiosOn(context);
-      return radiosOn;
-    }
-
-    return false;
+    return missing;
   }
 }

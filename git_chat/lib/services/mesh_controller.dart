@@ -32,10 +32,7 @@ class MeshPacket {
 
   MeshPacket({required this.type, required this.payload});
 
-  Map<String, dynamic> toMap() => {
-    'type': type.index,
-    'payload': payload,
-  };
+  Map<String, dynamic> toMap() => {'type': type.index, 'payload': payload};
 
   factory MeshPacket.fromMap(Map<String, dynamic> map) {
     return MeshPacket(
@@ -50,10 +47,12 @@ class MeshPacket {
 /// which uses Bluetooth, BLE, and Wi-Fi Direct seamlessly.
 class MeshController extends ChangeNotifier {
   final Strategy strategy = Strategy.P2P_CLUSTER;
+  static const String _serviceId = 'com.gitchat.mesh';
 
   final Map<String, MeshPeer> _peers = {};
   bool _isAdvertising = false;
   bool _isDiscovering = false;
+  Timer? _rediscoveryTimer;
 
   final StreamController<ChatMessage> _incomingMessages =
       StreamController<ChatMessage>.broadcast();
@@ -83,6 +82,7 @@ class MeshController extends ChangeNotifier {
   @override
   void dispose() {
     stopMesh();
+    _rediscoveryTimer?.cancel();
     _incomingMessages.close();
     _incomingGroupInvites.close();
     _passwordProtectedInvites.close();
@@ -95,7 +95,9 @@ class MeshController extends ChangeNotifier {
   Future<void> startMesh() async {
     final hasPerms = await PermissionService.requestPermissions();
     if (!hasPerms) {
-      debugPrint('[MESH] Permissions denied. Cannot start mesh.');
+      final missing = await PermissionService.getMissingPermissions();
+      debugPrint('[MESH] ❌ Cannot start mesh. Missing: $missing');
+      return; // Stop here — don't attempt to advertise/discover without perms
     }
 
     final username = StorageService.getUsername() ?? 'anon';
@@ -108,6 +110,7 @@ class MeshController extends ChangeNotifier {
         onConnectionInitiated: _onConnectionInit,
         onConnectionResult: _onConnectionResult,
         onDisconnected: _onDisconnected,
+        serviceId: _serviceId,
       );
       debugPrint('[MESH] Advertising started: $_isAdvertising');
     } catch (e) {
@@ -123,27 +126,77 @@ class MeshController extends ChangeNotifier {
           debugPrint(
             '[MESH] Found peer: $name ($id). Requesting connection...',
           );
-          await Nearby().requestConnection(
-            username,
-            id,
-            onConnectionInitiated: _onConnectionInit,
-            onConnectionResult: _onConnectionResult,
-            onDisconnected: _onDisconnected,
-          );
+          try {
+            await Nearby().requestConnection(
+              username,
+              id,
+              onConnectionInitiated: _onConnectionInit,
+              onConnectionResult: _onConnectionResult,
+              onDisconnected: _onDisconnected,
+            );
+          } catch (e) {
+            debugPrint('[MESH] Connection request failed: $e');
+          }
         },
         onEndpointLost: (id) {
           debugPrint('[MESH] Lost peer from radar: $id');
         },
+        serviceId: _serviceId,
       );
       debugPrint('[MESH] Discovery started: $_isDiscovering');
     } catch (e) {
       debugPrint('[MESH] Discovery failed: $e');
     }
 
+    // Periodically restart discovery to find new peers
+    _rediscoveryTimer?.cancel();
+    _rediscoveryTimer = Timer.periodic(
+      const Duration(seconds: 30),
+      (_) => _restartDiscovery(),
+    );
+
     notifyListeners();
   }
 
+  /// Restart discovery to pick up new peers without stopping advertising
+  Future<void> _restartDiscovery() async {
+    if (!_isAdvertising && !_isDiscovering) return;
+
+    final username = StorageService.getUsername() ?? 'anon';
+    try {
+      Nearby().stopDiscovery();
+      await Future.delayed(const Duration(milliseconds: 500));
+      _isDiscovering = await Nearby().startDiscovery(
+        username,
+        strategy,
+        onEndpointFound: (id, name, serviceId) async {
+          if (_peers.containsKey(id) && _peers[id]!.isConnected) return;
+          debugPrint('[MESH] Rediscovered peer: $name ($id)');
+          try {
+            await Nearby().requestConnection(
+              username,
+              id,
+              onConnectionInitiated: _onConnectionInit,
+              onConnectionResult: _onConnectionResult,
+              onDisconnected: _onDisconnected,
+            );
+          } catch (e) {
+            debugPrint('[MESH] Reconnection request failed: $e');
+          }
+        },
+        onEndpointLost: (id) {
+          debugPrint('[MESH] Lost peer from radar: $id');
+        },
+        serviceId: _serviceId,
+      );
+      debugPrint('[MESH] Rediscovery cycle complete');
+    } catch (e) {
+      debugPrint('[MESH] Rediscovery failed: $e');
+    }
+  }
+
   void stopMesh() {
+    _rediscoveryTimer?.cancel();
     Nearby().stopAdvertising();
     Nearby().stopDiscovery();
     Nearby().stopAllEndpoints();
@@ -238,9 +291,7 @@ class MeshController extends ChangeNotifier {
   void _handleIncomingMessage(ChatMessage message, String sourceId) {
     // Deduplication
     if (_seenMessageIds.contains(message.id)) {
-      debugPrint(
-        '[MESH] Dropping duplicate: ${message.id.substring(0, 6)}',
-      );
+      debugPrint('[MESH] Dropping duplicate: ${message.id.substring(0, 6)}');
       return;
     }
     _seenMessageIds.add(message.id);
@@ -340,9 +391,7 @@ class MeshController extends ChangeNotifier {
       payload: group.toMap(),
     );
     try {
-      final bytes = Uint8List.fromList(
-        utf8.encode(jsonEncode(packet.toMap())),
-      );
+      final bytes = Uint8List.fromList(utf8.encode(jsonEncode(packet.toMap())));
       await Nearby().sendBytesPayload(peerId, bytes);
       debugPrint('[MESH] Sent group invite to $peerId');
     } catch (e) {
@@ -364,9 +413,7 @@ class MeshController extends ChangeNotifier {
     if (targetIds.isEmpty) return;
 
     try {
-      final bytes = Uint8List.fromList(
-        utf8.encode(jsonEncode(packet.toMap())),
-      );
+      final bytes = Uint8List.fromList(utf8.encode(jsonEncode(packet.toMap())));
       for (final id in targetIds) {
         await Nearby().sendBytesPayload(id, bytes);
       }
