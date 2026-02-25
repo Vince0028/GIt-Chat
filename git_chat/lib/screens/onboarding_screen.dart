@@ -3,12 +3,14 @@ import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../theme/app_theme.dart';
 import '../services/storage_service.dart';
-import 'chat_screen.dart';
+import 'home_screen.dart';
+import '../services/mesh_controller.dart';
 
 class OnboardingScreen extends StatefulWidget {
   final VoidCallback? onComplete;
+  final MeshController? meshController;
 
-  const OnboardingScreen({super.key, this.onComplete});
+  const OnboardingScreen({super.key, this.onComplete, this.meshController});
 
   @override
   State<OnboardingScreen> createState() => _OnboardingScreenState();
@@ -65,9 +67,13 @@ class _OnboardingScreenState extends State<OnboardingScreen>
     HapticFeedback.mediumImpact();
     StorageService.saveUsername(username);
 
+    // Trigger mesh start callback
+    widget.onComplete?.call();
+
     Navigator.of(context).pushReplacement(
       PageRouteBuilder(
-        pageBuilder: (_, animation, secondaryAnimation) => const ChatScreen(),
+        pageBuilder: (_, animation, secondaryAnimation) =>
+            HomeScreen(meshController: widget.meshController!),
         transitionsBuilder: (_, anim, secondaryAnim, child) {
           return FadeTransition(opacity: anim, child: child);
         },

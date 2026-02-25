@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:nearby_connections/nearby_connections.dart';
 import '../models/message.dart';
+import '../models/group.dart';
 import '../services/storage_service.dart';
 import '../services/permission_service.dart';
 
@@ -20,8 +22,31 @@ class MeshPeer {
   }) : lastSeen = DateTime.now();
 }
 
+/// Packet types for the mesh protocol
+enum MeshPacketType { message, groupInvite, groupJoinAck }
+
+/// A wrapper for all data sent over the mesh
+class MeshPacket {
+  final MeshPacketType type;
+  final Map<String, dynamic> payload;
+
+  MeshPacket({required this.type, required this.payload});
+
+  Map<String, dynamic> toMap() => {
+    'type': type.index,
+    'payload': payload,
+  };
+
+  factory MeshPacket.fromMap(Map<String, dynamic> map) {
+    return MeshPacket(
+      type: MeshPacketType.values[map['type'] as int],
+      payload: Map<String, dynamic>.from(map['payload'] as Map),
+    );
+  }
+}
+
 /// The core intelligence of the Serverless Mesh.
-/// Replaces typical BLE scanning with Google's Nearby Connections (P2P_CLUSTER)
+/// Uses Google's Nearby Connections (P2P_CLUSTER)
 /// which uses Bluetooth, BLE, and Wi-Fi Direct seamlessly.
 class MeshController extends ChangeNotifier {
   final Strategy strategy = Strategy.P2P_CLUSTER;
@@ -33,14 +58,20 @@ class MeshController extends ChangeNotifier {
   final StreamController<ChatMessage> _incomingMessages =
       StreamController<ChatMessage>.broadcast();
 
+  final StreamController<MeshGroup> _incomingGroupInvites =
+      StreamController<MeshGroup>.broadcast();
+
   final Set<String> _seenMessageIds = {};
 
   // ── Getters ──────────────────────────────────────────
   List<MeshPeer> get connectedPeers =>
       _peers.values.where((p) => p.isConnected).toList();
+  Map<String, MeshPeer> get allPeers => Map.unmodifiable(_peers);
   bool get isAdvertising => _isAdvertising;
   bool get isDiscovering => _isDiscovering;
+  bool get isMeshActive => _isAdvertising || _isDiscovering;
   Stream<ChatMessage> get incomingMessages => _incomingMessages.stream;
+  Stream<MeshGroup> get incomingGroupInvites => _incomingGroupInvites.stream;
 
   // ── Lifecycle ────────────────────────────────────────
 
@@ -48,15 +79,14 @@ class MeshController extends ChangeNotifier {
   void dispose() {
     stopMesh();
     _incomingMessages.close();
+    _incomingGroupInvites.close();
     super.dispose();
   }
 
   // ── Mesh Activation ──────────────────────────────────
 
-  /// Starts the "Vibe Coding" Dual Loop: Advertising & Discovering
-  /// simultaneously to build the interconnected cluster.
+  /// Starts the Dual Loop: Advertising & Discovering simultaneously
   Future<void> startMesh() async {
-    // 1. Check and request permissions
     final hasPerms = await PermissionService.requestPermissions();
     if (!hasPerms) {
       debugPrint('[MESH] Permissions denied. Cannot start mesh.');
@@ -73,6 +103,7 @@ class MeshController extends ChangeNotifier {
         onConnectionResult: _onConnectionResult,
         onDisconnected: _onDisconnected,
       );
+      debugPrint('[MESH] Advertising started: $_isAdvertising');
     } catch (e) {
       debugPrint('[MESH] Advertising failed: $e');
     }
@@ -86,7 +117,6 @@ class MeshController extends ChangeNotifier {
           debugPrint(
             '[MESH] Found peer: $name ($id). Requesting connection...',
           );
-          // Auto-connect to build the mesh faster
           await Nearby().requestConnection(
             username,
             id,
@@ -99,6 +129,7 @@ class MeshController extends ChangeNotifier {
           debugPrint('[MESH] Lost peer from radar: $id');
         },
       );
+      debugPrint('[MESH] Discovery started: $_isDiscovering');
     } catch (e) {
       debugPrint('[MESH] Discovery failed: $e');
     }
@@ -120,110 +151,192 @@ class MeshController extends ChangeNotifier {
 
   void _onConnectionInit(String id, ConnectionInfo info) async {
     debugPrint('[MESH] Handshake with ${info.endpointName} ($id)...');
-    // Automatically accept the connection to form the decentralized cluster
     await Nearby().acceptConnection(
       id,
       onPayLoadRecieved: (endpointId, payload) {
         if (payload.type == PayloadType.BYTES) {
-          _handleIncomingBytes(payload.bytes!, endpointId);
+          _handleIncomingPayload(payload.bytes!, endpointId);
         }
       },
       onPayloadTransferUpdate: (endpointId, payloadTransferUpdate) {},
+    );
+    _peers[id] = MeshPeer(
+      endpointId: id,
+      endpointName: info.endpointName,
+      isConnected: false,
     );
   }
 
   void _onConnectionResult(String id, Status status) {
     if (status == Status.CONNECTED) {
       debugPrint('[MESH] Connected to peer: $id!');
-      _peers[id] = MeshPeer(
-        endpointId: id,
-        endpointName: 'peer',
-        isConnected: true,
-      );
+      if (_peers.containsKey(id)) {
+        _peers[id]!.isConnected = true;
+        _peers[id]!.lastSeen = DateTime.now();
+      } else {
+        _peers[id] = MeshPeer(
+          endpointId: id,
+          endpointName: 'peer',
+          isConnected: true,
+        );
+      }
       notifyListeners();
     } else {
       debugPrint('[MESH] Connection failed or rejected: $id');
       _peers.remove(id);
+      notifyListeners();
     }
   }
 
   void _onDisconnected(String id) {
     debugPrint('[MESH] Disconnected from peer: $id');
-    _peers[id]?.isConnected = false;
     _peers.remove(id);
     notifyListeners();
   }
 
-  // ── Gossip Protocol (Messaging & Relay) ──────────────
+  // ── Packet Router ────────────────────────────────────
 
-  /// Send a message originating from this device
-  Future<void> broadcastLocalMessage(ChatMessage message) async {
-    // 1. Mark as seen so we don't relay our own echo
-    _seenMessageIds.add(message.id);
-
-    // 2. Save locally
-    StorageService.saveMessage(message);
-
-    // 3. Blast to all immediately connected peers
-    await _blastToPeers(message);
-  }
-
-  /// Handles incoming payloads from the network
-  void _handleIncomingBytes(Uint8List bytes, String sourceId) {
+  void _handleIncomingPayload(Uint8List bytes, String sourceId) {
     try {
       final jsonStr = utf8.decode(bytes);
       final map = jsonDecode(jsonStr) as Map<String, dynamic>;
-      final message = ChatMessage.fromMap(map);
 
-      // --- 1. Deduplication Check ---
-      if (_seenMessageIds.contains(message.id)) {
-        debugPrint(
-          '[MESH] Dropping duplicate from $sourceId: ${message.id.substring(0, 6)}',
-        );
-        return;
-      }
-      _seenMessageIds.add(message.id);
-
-      debugPrint('[MESH] Received new msg from $sourceId: ${message.body}');
-
-      // --- 2. Check Group / Delivery Logic ---
-      final myUsername = StorageService.getUsername() ?? 'anon';
-      bool isForMe = (message.to == myUsername || message.to == 'broadcast');
-
-      // TODO: Future Group Encryption Logic goes here.
-      // If we are part of the groupId, we decrypt and store.
-
-      if (isForMe) {
-        StorageService.saveMessage(message);
-        _incomingMessages.add(message);
-      }
-
-      // --- 3. Relay Logic (The Gossip hops) ---
-      if (message.ttl > 0) {
-        // Decrement TTL
-        final relayMsg = ChatMessage(
-          id: message.id,
-          from: message.from,
-          to: message.to,
-          body: message.body,
-          timestamp: message.timestamp,
-          ttl: message.ttl - 1,
-          groupId: message.groupId,
-          isRelayed: true,
-        );
-
-        debugPrint('[MESH] Relaying message (TTL=${relayMsg.ttl})...');
-        _blastToPeers(relayMsg, excludeId: sourceId);
+      // Try new packet format first, fall back to raw message
+      if (map.containsKey('type') && map.containsKey('payload')) {
+        final packet = MeshPacket.fromMap(map);
+        switch (packet.type) {
+          case MeshPacketType.message:
+            _handleIncomingMessage(
+              ChatMessage.fromMap(packet.payload),
+              sourceId,
+            );
+            break;
+          case MeshPacketType.groupInvite:
+            _handleGroupInvite(MeshGroup.fromMap(packet.payload), sourceId);
+            break;
+          case MeshPacketType.groupJoinAck:
+            _handleGroupJoinAck(packet.payload, sourceId);
+            break;
+        }
       } else {
-        debugPrint('[MESH] Message died (TTL=0)');
+        // Legacy: raw ChatMessage
+        _handleIncomingMessage(ChatMessage.fromMap(map), sourceId);
       }
     } catch (e) {
       debugPrint('[MESH] Failed to parse payload from $sourceId: $e');
     }
   }
 
-  /// Sends a raw message map to all known connected endpoints, optionally excluding the sender
-  Future<void> _blastToPeers(ChatMessage message, {String? excludeId}) async {
+  // ── Message Handling ─────────────────────────────────
+
+  void _handleIncomingMessage(ChatMessage message, String sourceId) {
+    // Deduplication
+    if (_seenMessageIds.contains(message.id)) {
+      debugPrint(
+        '[MESH] Dropping duplicate: ${message.id.substring(0, 6)}',
+      );
+      return;
+    }
+    _seenMessageIds.add(message.id);
+
+    debugPrint('[MESH] Received msg from $sourceId: ${message.body}');
+
+    final myUsername = StorageService.getUsername() ?? 'anon';
+    bool isForMe = false;
+
+    if (message.groupId != null && message.groupId!.isNotEmpty) {
+      // Group message — check if I'm a member
+      isForMe = StorageService.isGroupMember(message.groupId!);
+    } else {
+      // Broadcast or DM
+      isForMe = (message.to == myUsername || message.to == 'broadcast');
+    }
+
+    if (isForMe) {
+      StorageService.saveMessage(message);
+      _incomingMessages.add(message);
+    }
+
+    // Relay if TTL > 0
+    if (message.ttl > 0) {
+      final relayMsg = ChatMessage(
+        id: message.id,
+        from: message.from,
+        to: message.to,
+        body: message.body,
+        timestamp: message.timestamp,
+        ttl: message.ttl - 1,
+        groupId: message.groupId,
+        isRelayed: true,
+      );
+      debugPrint('[MESH] Relaying message (TTL=${relayMsg.ttl})...');
+      _sendPacketToPeers(
+        MeshPacket(type: MeshPacketType.message, payload: relayMsg.toMap()),
+        excludeId: sourceId,
+      );
+    }
+  }
+
+  // ── Group Invite Handling ────────────────────────────
+
+  void _handleGroupInvite(MeshGroup group, String sourceId) {
+    debugPrint('[MESH] Received group invite: ${group.name} from $sourceId');
+    StorageService.saveGroup(group);
+    _incomingGroupInvites.add(group);
+    notifyListeners();
+  }
+
+  void _handleGroupJoinAck(Map<String, dynamic> data, String sourceId) {
+    final groupId = data['groupId'] as String?;
+    final username = data['username'] as String?;
+    if (groupId != null && username != null) {
+      StorageService.addMemberToGroup(groupId, username);
+      debugPrint('[MESH] $username joined group $groupId');
+      notifyListeners();
+    }
+  }
+
+  // ── Public API: Send Messages ────────────────────────
+
+  /// Send a message (broadcast or group)
+  Future<void> broadcastLocalMessage(ChatMessage message) async {
+    _seenMessageIds.add(message.id);
+    StorageService.saveMessage(message);
+    await _sendPacketToPeers(
+      MeshPacket(type: MeshPacketType.message, payload: message.toMap()),
+    );
+  }
+
+  /// Send a group invite to all connected peers
+  Future<void> sendGroupInvite(MeshGroup group) async {
+    await _sendPacketToPeers(
+      MeshPacket(type: MeshPacketType.groupInvite, payload: group.toMap()),
+    );
+  }
+
+  /// Send a group invite to a specific peer
+  Future<void> sendGroupInviteToPeer(MeshGroup group, String peerId) async {
+    final packet = MeshPacket(
+      type: MeshPacketType.groupInvite,
+      payload: group.toMap(),
+    );
+    try {
+      final bytes = Uint8List.fromList(
+        utf8.encode(jsonEncode(packet.toMap())),
+      );
+      await Nearby().sendBytesPayload(peerId, bytes);
+      debugPrint('[MESH] Sent group invite to $peerId');
+    } catch (e) {
+      debugPrint('[MESH] Failed to send invite to $peerId: $e');
+    }
+  }
+
+  // ── Internal: Send packets ───────────────────────────
+
+  Future<void> _sendPacketToPeers(
+    MeshPacket packet, {
+    String? excludeId,
+  }) async {
     final targetIds = _peers.values
         .where((p) => p.isConnected && p.endpointId != excludeId)
         .map((p) => p.endpointId)
@@ -233,14 +346,34 @@ class MeshController extends ChangeNotifier {
 
     try {
       final bytes = Uint8List.fromList(
-        utf8.encode(jsonEncode(message.toMap())),
+        utf8.encode(jsonEncode(packet.toMap())),
       );
       for (final id in targetIds) {
         await Nearby().sendBytesPayload(id, bytes);
       }
-      debugPrint('[MESH] Blasted message to ${targetIds.length} peers');
+      debugPrint('[MESH] Sent packet to ${targetIds.length} peers');
     } catch (e) {
-      debugPrint('[MESH] Failed to blast bytes: $e');
+      debugPrint('[MESH] Failed to send packet: $e');
     }
+  }
+
+  // ── Group Utilities ──────────────────────────────────
+
+  /// Generate a random group ID like "MESH_XXXXXX"
+  static String generateGroupId() {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    final rand = Random();
+    final suffix = List.generate(
+      6,
+      (_) => chars[rand.nextInt(chars.length)],
+    ).join();
+    return 'MESH_$suffix';
+  }
+
+  /// Generate a random symmetric key (base64)
+  static String generateSymmetricKey() {
+    final rand = Random.secure();
+    final bytes = List.generate(32, (_) => rand.nextInt(256));
+    return base64Encode(bytes);
   }
 }

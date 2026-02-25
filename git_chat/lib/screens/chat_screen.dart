@@ -10,8 +10,17 @@ import '../services/mesh_controller.dart';
 
 class ChatScreen extends StatefulWidget {
   final MeshController? meshController;
+  final String? groupId;
+  final String? groupName;
 
-  const ChatScreen({super.key, this.meshController});
+  const ChatScreen({
+    super.key,
+    this.meshController,
+    this.groupId,
+    this.groupName,
+  });
+
+  bool get isGroupChat => groupId != null && groupId!.isNotEmpty;
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -32,8 +41,13 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     _loadMessages();
 
     // Listen for incoming Mesh messages
-    _incomingSub = widget.meshController?.incomingMessages.listen((_) {
-      _loadMessages();
+    _incomingSub = widget.meshController?.incomingMessages.listen((msg) {
+      // Only reload if the message belongs to this chat
+      if (widget.isGroupChat) {
+        if (msg.groupId == widget.groupId) _loadMessages();
+      } else {
+        if (msg.groupId == null || msg.groupId!.isEmpty) _loadMessages();
+      }
     });
     widget.meshController?.addListener(_onMeshUpdate);
   }
@@ -44,7 +58,11 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
 
   void _loadMessages() {
     setState(() {
-      _messages = StorageService.getMessages();
+      if (widget.isGroupChat) {
+        _messages = StorageService.getMessages(groupId: widget.groupId);
+      } else {
+        _messages = StorageService.getMessages();
+      }
     });
     _scrollToBottom();
   }
@@ -70,15 +88,14 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     final message = ChatMessage(
       id: _uuid.v4(),
       from: _username,
-      to: 'broadcast', // Public room for now
+      to: widget.isGroupChat ? widget.groupId! : 'broadcast',
       body: text,
       timestamp: DateTime.now(),
-      ttl: 3,
+      ttl: 5,
+      groupId: widget.groupId,
     );
 
-    StorageService.saveMessage(message);
-
-    // Also broadcast over Mesh
+    // broadcastLocalMessage saves + sends over mesh
     widget.meshController?.broadcastLocalMessage(message);
 
     _msgController.clear();
@@ -117,15 +134,25 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
 
   PreferredSizeWidget _buildAppBar() {
     return AppBar(
+      leading: Navigator.of(context).canPop()
+          ? IconButton(
+              icon: const Icon(Icons.arrow_back, color: AppTheme.textPrimary),
+              onPressed: () => Navigator.of(context).pop(),
+            )
+          : null,
       title: Row(
         children: [
-          const Icon(Icons.terminal, color: AppTheme.green, size: 20),
+          Icon(
+            widget.isGroupChat ? Icons.group : Icons.terminal,
+            color: widget.isGroupChat ? AppTheme.purple : AppTheme.green,
+            size: 20,
+          ),
           const SizedBox(width: 8),
           Text(
-            'GitChat',
+            widget.isGroupChat ? widget.groupName! : 'GitChat',
             style: GoogleFonts.firaCode(
-              color: AppTheme.green,
-              fontSize: 18,
+              color: widget.isGroupChat ? AppTheme.purple : AppTheme.green,
+              fontSize: 16,
               fontWeight: FontWeight.bold,
             ),
           ),
@@ -133,13 +160,15 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
             decoration: BoxDecoration(
-              color: AppTheme.green.withValues(alpha: 0.15),
+              color: (widget.isGroupChat ? AppTheme.purple : AppTheme.green)
+                  .withValues(alpha: 0.15),
               borderRadius: BorderRadius.circular(4),
             ),
             child: Text(
-              'MESH',
+              widget.isGroupChat ? 'GROUP' : 'PUBLIC',
               style: GoogleFonts.firaCode(
-                color: AppTheme.green,
+                color:
+                    widget.isGroupChat ? AppTheme.purple : AppTheme.green,
                 fontSize: 9,
                 fontWeight: FontWeight.bold,
               ),
@@ -148,14 +177,37 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         ],
       ),
       actions: [
+        if (widget.isGroupChat)
+          IconButton(
+            icon: const Icon(Icons.share, color: AppTheme.cyan),
+            tooltip: 'Invite peers',
+            onPressed: () {
+              final group = StorageService.getGroup(widget.groupId!);
+              if (group != null) {
+                widget.meshController?.sendGroupInvite(group);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      '> broadcasting group invite to nearby peers...',
+                      style: GoogleFonts.firaCode(fontSize: 12),
+                    ),
+                    backgroundColor: AppTheme.bgCard,
+                    behavior: SnackBarBehavior.floating,
+                  ),
+                );
+              }
+            },
+          ),
         IconButton(
           icon: const Icon(Icons.bluetooth_searching, color: AppTheme.cyan),
-          tooltip: 'Discover Peers',
+          tooltip: 'Mesh Status',
           onPressed: () {
+            final peers =
+                widget.meshController?.connectedPeers.length ?? 0;
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
                 content: Text(
-                  '> cluster mesh is active in background...',
+                  '> mesh active • $peers peers connected',
                   style: GoogleFonts.firaCode(fontSize: 12),
                 ),
                 backgroundColor: AppTheme.bgCard,
@@ -379,7 +431,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                   fontSize: 14,
                 ),
                 decoration: InputDecoration(
-                  hintText: 'broadcast message...',
+                  hintText: widget.isGroupChat
+                      ? 'message ${widget.groupName}...'
+                      : 'broadcast message...',
                   filled: false,
                   border: InputBorder.none,
                   enabledBorder: InputBorder.none,

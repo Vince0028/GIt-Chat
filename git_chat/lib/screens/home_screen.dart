@@ -1,0 +1,630 @@
+import 'dart:async';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:google_fonts/google_fonts.dart';
+import '../theme/app_theme.dart';
+import '../models/group.dart';
+import '../services/storage_service.dart';
+import '../services/mesh_controller.dart';
+import 'chat_screen.dart';
+import 'create_group_screen.dart';
+import 'permission_modal.dart';
+
+class HomeScreen extends StatefulWidget {
+  final MeshController meshController;
+
+  const HomeScreen({super.key, required this.meshController});
+
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  List<MeshGroup> _groups = [];
+  String _username = '';
+  StreamSubscription<MeshGroup>? _inviteSub;
+  bool _permissionShown = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _username = StorageService.getUsername() ?? 'anon';
+    _loadGroups();
+
+    // Listen for group invites from the mesh
+    _inviteSub = widget.meshController.incomingGroupInvites.listen((group) {
+      _loadGroups();
+      _showInviteSnackbar(group);
+    });
+
+    widget.meshController.addListener(_onMeshUpdate);
+
+    // Show permission modal after first frame
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_permissionShown) {
+        _permissionShown = true;
+        _showPermissionModal();
+      }
+    });
+  }
+
+  Future<void> _showPermissionModal() async {
+    if (!mounted) return;
+    await PermissionModal.show(context);
+  }
+
+  void _onMeshUpdate() {
+    if (mounted) setState(() {});
+  }
+
+  void _loadGroups() {
+    setState(() {
+      _groups = StorageService.getGroups();
+    });
+  }
+
+  void _showInviteSnackbar(MeshGroup group) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          '> New mesh group joined: ${group.name}',
+          style: GoogleFonts.firaCode(fontSize: 12),
+        ),
+        backgroundColor: AppTheme.bgCard,
+        behavior: SnackBarBehavior.floating,
+        action: SnackBarAction(
+          label: 'OPEN',
+          textColor: AppTheme.green,
+          onPressed: () => _openGroupChat(group),
+        ),
+      ),
+    );
+  }
+
+  void _openGroupChat(MeshGroup group) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ChatScreen(
+          meshController: widget.meshController,
+          groupId: group.id,
+          groupName: group.name,
+        ),
+      ),
+    ).then((_) => _loadGroups());
+  }
+
+  void _openBroadcastChat() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ChatScreen(
+          meshController: widget.meshController,
+        ),
+      ),
+    );
+  }
+
+  void _createGroup() async {
+    final result = await Navigator.of(context).push<MeshGroup>(
+      MaterialPageRoute(
+        builder: (_) => CreateGroupScreen(
+          meshController: widget.meshController,
+        ),
+      ),
+    );
+    if (result != null) {
+      _loadGroups();
+    }
+  }
+
+  @override
+  void dispose() {
+    _inviteSub?.cancel();
+    widget.meshController.removeListener(_onMeshUpdate);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final peerCount = widget.meshController.connectedPeers.length;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Row(
+          children: [
+            const Icon(Icons.terminal, color: AppTheme.green, size: 20),
+            const SizedBox(width: 8),
+            Text(
+              'GitChat',
+              style: GoogleFonts.firaCode(
+                color: AppTheme.green,
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+              decoration: BoxDecoration(
+                color: AppTheme.green.withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Text(
+                'MESH',
+                style: GoogleFonts.firaCode(
+                  color: AppTheme.green,
+                  fontSize: 9,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          // Peer count badge
+          Container(
+            margin: const EdgeInsets.only(right: 12),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: peerCount > 0
+                  ? AppTheme.cyan.withValues(alpha: 0.12)
+                  : AppTheme.bgCard,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                color: peerCount > 0 ? AppTheme.cyan : AppTheme.border,
+              ),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.wifi_tethering,
+                  size: 14,
+                  color: peerCount > 0 ? AppTheme.cyan : AppTheme.textMuted,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  '$peerCount',
+                  style: GoogleFonts.firaCode(
+                    color:
+                        peerCount > 0 ? AppTheme.cyan : AppTheme.textMuted,
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+      body: Column(
+        children: [
+          // User status bar
+          _buildStatusBar(),
+
+          // Content
+          Expanded(
+            child: ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                // Broadcast chat tile
+                _buildBroadcastTile(),
+                const SizedBox(height: 20),
+
+                // Groups section header
+                Row(
+                  children: [
+                    Text(
+                      '> MESH GROUPS',
+                      style: GoogleFonts.firaCode(
+                        color: AppTheme.textSecondary,
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const Spacer(),
+                    Text(
+                      '${_groups.length} groups',
+                      style: GoogleFonts.firaCode(
+                        color: AppTheme.textMuted,
+                        fontSize: 10,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+
+                // Group list
+                if (_groups.isEmpty) _buildEmptyGroups(),
+                ..._groups.map((g) => Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: _buildGroupTile(g),
+                )),
+              ],
+            ),
+          ),
+        ],
+      ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: _createGroup,
+        backgroundColor: AppTheme.green,
+        child: const Icon(Icons.group_add, color: AppTheme.bgDark),
+      ),
+    );
+  }
+
+  Widget _buildStatusBar() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: const BoxDecoration(
+        color: AppTheme.bgCard,
+        border: Border(bottom: BorderSide(color: AppTheme.border, width: 1)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(
+              color: widget.meshController.isMeshActive
+                  ? AppTheme.green
+                  : AppTheme.red,
+              shape: BoxShape.circle,
+              boxShadow: [
+                BoxShadow(
+                  color: widget.meshController.isMeshActive
+                      ? AppTheme.green
+                      : AppTheme.red,
+                  blurRadius: 6,
+                  spreadRadius: 1,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            '@$_username',
+            style: GoogleFonts.firaCode(
+              color: AppTheme.green,
+              fontSize: 12,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const Spacer(),
+          Text(
+            widget.meshController.isMeshActive
+                ? 'mesh active'
+                : 'mesh offline',
+            style: GoogleFonts.firaCode(
+              color: widget.meshController.isMeshActive
+                  ? AppTheme.green
+                  : AppTheme.red,
+              fontSize: 10,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBroadcastTile() {
+    final broadcastMsgs = StorageService.getMessages();
+    final lastMsg =
+        broadcastMsgs.isNotEmpty ? broadcastMsgs.last.body : 'No messages yet';
+    final msgCount = broadcastMsgs.length;
+
+    return GestureDetector(
+      onTap: _openBroadcastChat,
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: AppTheme.bgCard,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: AppTheme.green.withValues(alpha: 0.3)),
+          boxShadow: [
+            BoxShadow(
+              color: AppTheme.green.withValues(alpha: 0.05),
+              blurRadius: 12,
+              spreadRadius: 2,
+            ),
+          ],
+        ),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: AppTheme.green.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: const Icon(
+                Icons.public,
+                color: AppTheme.green,
+                size: 24,
+              ),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Text(
+                        'Broadcast',
+                        style: GoogleFonts.firaCode(
+                          color: AppTheme.textPrimary,
+                          fontSize: 14,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 1,
+                        ),
+                        decoration: BoxDecoration(
+                          color: AppTheme.green.withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          'PUBLIC',
+                          style: GoogleFonts.firaCode(
+                            color: AppTheme.green,
+                            fontSize: 8,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    lastMsg,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: GoogleFonts.firaCode(
+                      color: AppTheme.textSecondary,
+                      fontSize: 11,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            if (msgCount > 0)
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 8,
+                  vertical: 4,
+                ),
+                decoration: BoxDecoration(
+                  color: AppTheme.green.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  '$msgCount',
+                  style: GoogleFonts.firaCode(
+                    color: AppTheme.green,
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            const SizedBox(width: 8),
+            const Icon(
+              Icons.chevron_right,
+              color: AppTheme.textMuted,
+              size: 20,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildGroupTile(MeshGroup group) {
+    final lastMsg = StorageService.getLastGroupMessage(group.id);
+    final preview = lastMsg?.body ?? 'No messages yet';
+
+    return GestureDetector(
+      onTap: () => _openGroupChat(group),
+      onLongPress: () => _showGroupOptions(group),
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: AppTheme.bgCard,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: AppTheme.border),
+        ),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: AppTheme.purple.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: const Icon(
+                Icons.group,
+                color: AppTheme.purple,
+                size: 20,
+              ),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    group.name,
+                    style: GoogleFonts.firaCode(
+                      color: AppTheme.textPrimary,
+                      fontSize: 13,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    preview,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: GoogleFonts.firaCode(
+                      color: AppTheme.textSecondary,
+                      fontSize: 10,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Text(
+                  '${group.members.length} members',
+                  style: GoogleFonts.firaCode(
+                    color: AppTheme.textMuted,
+                    fontSize: 9,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  group.id.substring(0, 10),
+                  style: GoogleFonts.firaCode(
+                    color: AppTheme.textMuted,
+                    fontSize: 8,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(width: 8),
+            const Icon(
+              Icons.chevron_right,
+              color: AppTheme.textMuted,
+              size: 18,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEmptyGroups() {
+    return Container(
+      padding: const EdgeInsets.all(32),
+      child: Column(
+        children: [
+          Icon(
+            Icons.group_outlined,
+            size: 48,
+            color: AppTheme.textMuted.withValues(alpha: 0.3),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            '> no mesh groups yet',
+            style: GoogleFonts.firaCode(
+              color: AppTheme.textMuted,
+              fontSize: 12,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'tap + to create one',
+            style: GoogleFonts.firaCode(
+              color: AppTheme.textMuted.withValues(alpha: 0.6),
+              fontSize: 10,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showGroupOptions(MeshGroup group) {
+    HapticFeedback.mediumImpact();
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppTheme.bgCard,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) => Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              group.name,
+              style: GoogleFonts.firaCode(
+                color: AppTheme.textPrimary,
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'ID: ${group.id}',
+              style: GoogleFonts.firaCode(
+                color: AppTheme.textMuted,
+                fontSize: 11,
+              ),
+            ),
+            const SizedBox(height: 16),
+            ListTile(
+              leading: const Icon(Icons.share, color: AppTheme.cyan),
+              title: Text(
+                'Share to nearby peers',
+                style: GoogleFonts.firaCode(
+                  color: AppTheme.textPrimary,
+                  fontSize: 12,
+                ),
+              ),
+              onTap: () {
+                Navigator.pop(ctx);
+                widget.meshController.sendGroupInvite(group);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      '> broadcasting group invite...',
+                      style: GoogleFonts.firaCode(fontSize: 12),
+                    ),
+                    backgroundColor: AppTheme.bgCard,
+                    behavior: SnackBarBehavior.floating,
+                  ),
+                );
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.info_outline, color: AppTheme.orange),
+              title: Text(
+                'Members: ${group.members.join(", ")}',
+                style: GoogleFonts.firaCode(
+                  color: AppTheme.textSecondary,
+                  fontSize: 11,
+                ),
+              ),
+              onTap: () => Navigator.pop(ctx),
+            ),
+            ListTile(
+              leading: const Icon(Icons.delete_outline, color: AppTheme.red),
+              title: Text(
+                'Leave group',
+                style: GoogleFonts.firaCode(
+                  color: AppTheme.red,
+                  fontSize: 12,
+                ),
+              ),
+              onTap: () {
+                Navigator.pop(ctx);
+                StorageService.deleteGroup(group.id);
+                _loadGroups();
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}

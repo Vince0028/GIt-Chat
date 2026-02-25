@@ -4,7 +4,7 @@ import 'theme/app_theme.dart';
 import 'services/storage_service.dart';
 import 'services/mesh_controller.dart';
 import 'screens/onboarding_screen.dart';
-import 'screens/chat_screen.dart';
+import 'screens/home_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -50,7 +50,6 @@ class _GitChatAppState extends State<GitChatApp> {
   }
 
   Future<void> _startMeshNetwork() async {
-    // Wait a tiny bit for UI to mount
     await Future.delayed(const Duration(milliseconds: 500));
     await _meshController.startMesh();
   }
@@ -68,8 +67,11 @@ class _GitChatAppState extends State<GitChatApp> {
       debugShowCheckedModeBanner: false,
       theme: AppTheme.darkTheme,
       home: widget.showOnboarding
-          ? OnboardingScreen(onComplete: _startMeshNetwork)
-          : ChatScreen(meshController: _meshController),
+          ? OnboardingScreen(
+              onComplete: _startMeshNetwork,
+              meshController: _meshController,
+            )
+          : HomeScreen(meshController: _meshController),
     );
   }
 }
