@@ -223,31 +223,30 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       final picker = ImagePicker();
       final picked = await picker.pickImage(
         source: source,
-        maxWidth:
-            1024, // Decent quality — sendFilePayload (Wi-Fi Direct) handles large files
-        maxHeight: 1024,
-        imageQuality: 70,
+        maxWidth: 800, // Good quality — chunking handles larger payloads
+        maxHeight: 800,
+        imageQuality: 65,
       );
       if (picked == null) return;
 
-      // Save to app documents so it persists and is accessible for sendFilePayload
-      final msgId = _uuid.v4();
-      final appDir = await widget.meshController!.getImagesDir();
-      final destPath = '$appDir/$msgId.jpg';
-      await picked.saveTo(destPath);
+      final bytes = await picked.readAsBytes();
+      final b64 = base64Encode(bytes);
+      debugPrint(
+        '[CHAT] Image picked: ${bytes.length} bytes, base64: ${b64.length} chars',
+      );
 
-      final meta = ChatMessage(
-        id: msgId,
+      final msg = ChatMessage(
+        id: _uuid.v4(),
         from: _username,
         to: widget.isGroupChat ? widget.groupId! : 'broadcast',
-        body: destPath, // local file path
+        body: b64,
         timestamp: DateTime.now(),
         ttl: 0,
         groupId: widget.groupId,
-        messageType: 'image_file',
+        messageType: 'image',
       );
 
-      await widget.meshController?.sendImageMessage(meta, destPath);
+      await widget.meshController?.sendChunkedImage(msg);
       _loadMessages();
     } catch (e) {
       debugPrint('[CHAT] Image pick failed: $e');
@@ -1063,8 +1062,11 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     return GestureDetector(
       onTap: () async {
         final uri = Uri.tryParse(msg.body);
-        if (uri != null && await canLaunchUrl(uri)) {
+        if (uri == null) return;
+        try {
           await launchUrl(uri, mode: LaunchMode.externalApplication);
+        } catch (e) {
+          debugPrint('[CHAT] Failed to launch URL: $e');
         }
       },
       child: Container(

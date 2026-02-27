@@ -32,7 +32,8 @@ enum MeshPacketType {
   groupJoinAck,
   messageEdit,
   messageDelete,
-  imageMetadata, // sent after sendFilePayload to give receiver the chat metadata
+  imageMetadata, // legacy (kept for index compatibility)
+  imageChunk, // chunked image data sent via bytes payload
 }
 
 /// A wrapper for all data sent over the mesh
@@ -63,11 +64,9 @@ class MeshController extends ChangeNotifier {
   bool _isAdvertising = false;
   bool _isDiscovering = false;
 
-  // Image file payload tracking
-  // payloadId -> temp file path (received FILE payload, waiting for metadata)
-  final Map<int, String> _pendingImageFiles = {};
-  // payloadId -> message metadata (received BYTES metadata, waiting for file)
-  final Map<int, Map<String, dynamic>> _pendingImageMeta = {};
+  // Image chunking — collect incoming chunks until all arrive
+  // messageId -> { 'totalChunks': int, 'meta': Map, 'chunks': Map<int,String> }
+  final Map<String, Map<String, dynamic>> _chunkCollectors = {};
 
   final StreamController<ChatMessage> _incomingMessages =
       StreamController<ChatMessage>.broadcast();
@@ -199,30 +198,12 @@ class MeshController extends ChangeNotifier {
     await Nearby().acceptConnection(
       id,
       onPayLoadRecieved: (endpointId, payload) {
-        if (payload.type == PayloadType.BYTES) {
+        if (payload.type == PayloadType.BYTES && payload.bytes != null) {
           _handleIncomingPayload(payload.bytes!, endpointId);
-        } else if (payload.type == PayloadType.FILE) {
-          // payload.uri is used on Android 11+ (filePath deprecated)
-          final path = payload.uri ?? payload.filePath;
-          if (path != null) {
-            debugPrint('[MESH] FILE payload incoming id=${payload.id} → $path');
-            // uri may be a file:// or content:// URI — normalise to path string
-            final resolvedPath = path.startsWith('file://')
-                ? Uri.parse(path).toFilePath()
-                : path;
-            _pendingImageFiles[payload.id] = resolvedPath;
-          }
         }
       },
       onPayloadTransferUpdate: (endpointId, update) {
-        if (update.status == PayloadStatus.SUCCESS) {
-          debugPrint('[MESH] Transfer ${update.id} SUCCESS');
-          _tryProcessImage(update.id);
-        } else if (update.status == PayloadStatus.FAILURE) {
-          debugPrint('[MESH] Transfer ${update.id} FAILED');
-          _pendingImageFiles.remove(update.id);
-          _pendingImageMeta.remove(update.id);
-        }
+        debugPrint('[MESH] Transfer ${update.id} status=${update.status}');
       },
     );
     // Only create a new peer entry if _onConnectionResult hasn't already done so.
@@ -291,7 +272,9 @@ class MeshController extends ChangeNotifier {
             _handleIncomingDelete(packet.payload);
             break;
           case MeshPacketType.imageMetadata:
-            _handleImageMetadata(packet.payload, sourceId);
+            break; // legacy — no longer used
+          case MeshPacketType.imageChunk:
+            _handleImageChunk(packet.payload, sourceId);
             break;
         }
       } else {
@@ -351,72 +334,100 @@ class MeshController extends ChangeNotifier {
     }
   }
 
-  // ── Image File Handling ──────────────────────────────
+  // ── Image Chunk Handling ─────────────────────────────
 
-  void _handleImageMetadata(Map<String, dynamic> data, String sourceId) {
-    final rawPayloadId = data['payloadId'];
-    if (rawPayloadId == null) return;
-    final payloadId = (rawPayloadId as num).toInt();
-    debugPrint('[MESH] Got image metadata for payloadId=$payloadId');
-    _pendingImageMeta[payloadId] = data;
-    _tryProcessImage(payloadId);
-  }
+  /// Max bytes for a single chunk's base64 data (leaves room for JSON wrapper)
+  static const int _chunkDataSize = 28000;
 
-  void _tryProcessImage(int payloadId) {
-    if (_pendingImageFiles.containsKey(payloadId) &&
-        _pendingImageMeta.containsKey(payloadId)) {
-      final tempPath = _pendingImageFiles.remove(payloadId)!;
-      final meta = _pendingImageMeta.remove(payloadId)!;
-      _saveAndEmitImage(tempPath, meta);
+  void _handleImageChunk(Map<String, dynamic> data, String sourceId) {
+    final msgId = data['messageId'] as String?;
+    final chunkIndex = data['chunkIndex'] as int?;
+    final totalChunks = data['totalChunks'] as int?;
+    final chunkData = data['data'] as String?;
+    if (msgId == null ||
+        chunkIndex == null ||
+        totalChunks == null ||
+        chunkData == null)
+      return;
+
+    if (_seenMessageIds.contains(msgId)) return; // already fully received
+
+    // Init collector if first chunk for this message
+    if (!_chunkCollectors.containsKey(msgId)) {
+      _chunkCollectors[msgId] = {
+        'totalChunks': totalChunks,
+        'meta': data['meta'] as Map<String, dynamic>? ?? {},
+        'chunks': <int, String>{},
+      };
+    }
+
+    final collector = _chunkCollectors[msgId]!;
+    final chunks = collector['chunks'] as Map<int, String>;
+    chunks[chunkIndex] = chunkData;
+
+    // Store meta from any chunk that has it (chunk 0 always carries it)
+    if (data.containsKey('meta') && data['meta'] != null) {
+      collector['meta'] = data['meta'] as Map<String, dynamic>;
+    }
+
+    debugPrint(
+      '[MESH] Chunk $chunkIndex/${totalChunks} for ${msgId.substring(0, 6)}',
+    );
+
+    // Check if all chunks arrived
+    if (chunks.length == totalChunks) {
+      _assembleImage(msgId, collector);
     }
   }
 
-  Future<void> _saveAndEmitImage(
-    String tempPath,
-    Map<String, dynamic> meta,
-  ) async {
-    try {
-      final msgId = meta['id'] as String;
-      final appDir = await getApplicationDocumentsDirectory();
-      final imagesDir = Directory('${appDir.path}/mesh_images');
-      await imagesDir.create(recursive: true);
-      final destPath = '${imagesDir.path}/$msgId.jpg';
-      await File(tempPath).copy(destPath);
-      debugPrint('[MESH] Image saved to $destPath');
+  void _assembleImage(String msgId, Map<String, dynamic> collector) {
+    _chunkCollectors.remove(msgId);
+    final totalChunks = collector['totalChunks'] as int;
+    final chunks = collector['chunks'] as Map<int, String>;
+    final meta = collector['meta'] as Map<String, dynamic>;
 
-      final myUsername = StorageService.getUsername() ?? 'anon';
-      bool isForMe = false;
-      final groupId = meta['groupId'] as String?;
-      if (groupId != null && groupId.isNotEmpty) {
-        isForMe = StorageService.isGroupMember(groupId);
-      } else {
-        final to = meta['to'] as String? ?? '';
-        isForMe = (to == myUsername || to == 'broadcast');
+    // Concatenate chunks in order
+    final buffer = StringBuffer();
+    for (int i = 0; i < totalChunks; i++) {
+      if (!chunks.containsKey(i)) {
+        debugPrint('[MESH] Missing chunk $i for $msgId — dropping image');
+        return;
       }
-
-      if (!isForMe) return;
-
-      final message = ChatMessage(
-        id: msgId,
-        from: meta['from'] as String,
-        to: meta['to'] as String,
-        body: destPath,
-        timestamp: DateTime.fromMillisecondsSinceEpoch(
-          meta['timestamp'] as int,
-        ),
-        ttl: 0,
-        groupId: groupId,
-        messageType: 'image_file',
-      );
-
-      if (_seenMessageIds.contains(msgId)) return;
-      _seenMessageIds.add(msgId);
-      StorageService.saveMessage(message);
-      _incomingMessages.add(message);
-      notifyListeners();
-    } catch (e) {
-      debugPrint('[MESH] Failed to save received image: $e');
+      buffer.write(chunks[i]!);
     }
+    final fullBase64 = buffer.toString();
+
+    final myUsername = StorageService.getUsername() ?? 'anon';
+    bool isForMe = false;
+    final groupId = meta['groupId'] as String?;
+    if (groupId != null && groupId.isNotEmpty) {
+      isForMe = StorageService.isGroupMember(groupId);
+    } else {
+      final to = meta['to'] as String? ?? 'broadcast';
+      isForMe = (to == myUsername || to == 'broadcast');
+    }
+    if (!isForMe) return;
+
+    final message = ChatMessage(
+      id: msgId,
+      from: meta['from'] as String? ?? 'anon',
+      to: meta['to'] as String? ?? 'broadcast',
+      body: fullBase64,
+      timestamp: DateTime.fromMillisecondsSinceEpoch(
+        meta['timestamp'] as int? ?? DateTime.now().millisecondsSinceEpoch,
+      ),
+      ttl: 0,
+      groupId: groupId,
+      messageType: 'image',
+    );
+
+    _seenMessageIds.add(msgId);
+    StorageService.saveMessage(message);
+    _incomingMessages.add(message);
+    notifyListeners();
+    debugPrint(
+      '[MESH] ✅ Image assembled: ${msgId.substring(0, 6)} (${fullBase64.length} chars)',
+    );
   }
 
   // ── Group Invite Handling ────────────────────────────
@@ -462,8 +473,8 @@ class MeshController extends ChangeNotifier {
     );
   }
 
-  /// Send an image via Wi-Fi Direct (sendFilePayload) + BYTES metadata
-  Future<void> sendImageMessage(ChatMessage meta, String localFilePath) async {
+  /// Send an image by chunking base64 data into multiple bytes payloads
+  Future<void> sendChunkedImage(ChatMessage meta) async {
     if (_seenMessageIds.contains(meta.id)) return;
     _seenMessageIds.add(meta.id);
     StorageService.saveMessage(meta); // save sender's copy
@@ -472,34 +483,50 @@ class MeshController extends ChangeNotifier {
     final peers = connectedPeers;
     if (peers.isEmpty) return;
 
-    for (final peer in peers) {
-      try {
-        // 1. Send file via Wi-Fi Direct — returns payloadId
-        final payloadId = await Nearby().sendFilePayload(
-          peer.endpointId,
-          localFilePath,
-        );
-        debugPrint(
-          '[MESH] sendFilePayload id=$payloadId to ${peer.endpointId}',
-        );
+    final base64Data = meta.body; // base64 encoded image
+    final totalChunks = (base64Data.length / _chunkDataSize).ceil();
+    debugPrint(
+      '[MESH] Sending image ${meta.id.substring(0, 6)} in $totalChunks chunks',
+    );
 
-        // 2. Send metadata so receiver knows which message this file belongs to
-        final metaMap = {...meta.toMap(), 'payloadId': payloadId};
-        final metaPacket = MeshPacket(
-          type: MeshPacketType.imageMetadata,
-          payload: metaMap,
-        );
-        final bytes = Uint8List.fromList(
-          utf8.encode(jsonEncode(metaPacket.toMap())),
-        );
-        await Nearby().sendBytesPayload(peer.endpointId, bytes);
-        debugPrint(
-          '[MESH] Sent image metadata (payloadId=$payloadId) to ${peer.endpointId}',
-        );
-      } catch (e) {
-        debugPrint('[MESH] Image send failed to ${peer.endpointId}: $e');
+    final metaMap = {
+      'from': meta.from,
+      'to': meta.to,
+      'groupId': meta.groupId,
+      'timestamp': meta.timestamp.millisecondsSinceEpoch,
+    };
+
+    for (int i = 0; i < totalChunks; i++) {
+      final start = i * _chunkDataSize;
+      final end = (start + _chunkDataSize).clamp(0, base64Data.length);
+      final chunkData = base64Data.substring(start, end);
+
+      final chunkPayload = <String, dynamic>{
+        'messageId': meta.id,
+        'chunkIndex': i,
+        'totalChunks': totalChunks,
+        'data': chunkData,
+      };
+      // Attach message metadata to chunk 0 so receiver knows who/where
+      if (i == 0) chunkPayload['meta'] = metaMap;
+
+      final packet = MeshPacket(
+        type: MeshPacketType.imageChunk,
+        payload: chunkPayload,
+      );
+      final bytes = Uint8List.fromList(utf8.encode(jsonEncode(packet.toMap())));
+
+      for (final peer in peers) {
+        try {
+          await Nearby().sendBytesPayload(peer.endpointId, bytes);
+        } catch (e) {
+          debugPrint('[MESH] Chunk $i failed to ${peer.endpointId}: $e');
+        }
       }
     }
+    debugPrint(
+      '[MESH] ✅ All $totalChunks chunks sent for ${meta.id.substring(0, 6)}',
+    );
   }
 
   /// Edit a local message and propagate the change to all connected peers
