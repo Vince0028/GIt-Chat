@@ -32,8 +32,12 @@ enum MeshPacketType {
   groupJoinAck,
   messageEdit,
   messageDelete,
-  imageMetadata, // legacy (kept for index compatibility)
-  imageChunk, // chunked image data sent via bytes payload
+  imageMetadata,
+  imageChunk,
+  callOffer,
+  callAnswer,
+  iceCandidate,
+  callEnd,
 }
 
 /// A wrapper for all data sent over the mesh
@@ -100,6 +104,12 @@ class MeshController extends ChangeNotifier {
   Map<String, double> get fileTransferProgress =>
       Map.unmodifiable(_fileTransferProgress);
 
+  // Call signaling
+  final StreamController<Map<String, dynamic>> _incomingCallSignals =
+      StreamController<Map<String, dynamic>>.broadcast();
+  Stream<Map<String, dynamic>> get incomingCallSignals =>
+      _incomingCallSignals.stream;
+
   // ── Lifecycle ────────────────────────────────────────
 
   /// Returns (and creates if needed) the persistent directory for mesh images
@@ -116,6 +126,7 @@ class MeshController extends ChangeNotifier {
     _incomingMessages.close();
     _incomingGroupInvites.close();
     _passwordProtectedInvites.close();
+    _incomingCallSignals.close();
     super.dispose();
   }
 
@@ -317,6 +328,14 @@ class MeshController extends ChangeNotifier {
             break;
           case MeshPacketType.imageChunk:
             _handleImageChunk(packet.payload, sourceId);
+            break;
+          case MeshPacketType.callOffer:
+          case MeshPacketType.callAnswer:
+          case MeshPacketType.iceCandidate:
+          case MeshPacketType.callEnd:
+            packet.payload['signalType'] = packet.type.name;
+            packet.payload['sourceId'] = sourceId;
+            _incomingCallSignals.add(packet.payload);
             break;
         }
       } else {
@@ -576,6 +595,16 @@ class MeshController extends ChangeNotifier {
       debugPrint('[MESH] $username joined group $groupId');
       notifyListeners();
     }
+  }
+
+  // ── Public API: Call Signaling ───────────────────────
+
+  /// Send a call signal (offer/answer/ice/end) to all connected peers
+  Future<void> sendCallSignal(
+    MeshPacketType type,
+    Map<String, dynamic> data,
+  ) async {
+    await _sendPacketToPeers(MeshPacket(type: type, payload: data));
   }
 
   // ── Public API: Send Messages ────────────────────────

@@ -11,6 +11,8 @@ import '../theme/app_theme.dart';
 import '../models/message.dart';
 import '../services/storage_service.dart';
 import '../services/mesh_controller.dart';
+import '../services/call_service.dart';
+import 'call_screen.dart';
 
 class ChatScreen extends StatefulWidget {
   final MeshController? meshController;
@@ -39,6 +41,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   List<ChatMessage> _messages = [];
   String _username = '';
   StreamSubscription<ChatMessage>? _incomingSub;
+  CallService? _callService;
 
   void _showTopNotification(
     String message, {
@@ -74,6 +77,95 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       }
     });
     widget.meshController?.addListener(_onMeshUpdate);
+
+    // Init call service
+    if (widget.meshController != null) {
+      _callService = CallService(meshController: widget.meshController!);
+      _callService!.addListener(_onCallUpdate);
+    }
+  }
+
+  void _onCallUpdate() {
+    if (!mounted) return;
+    // Show incoming call dialog when ringing
+    if (_callService?.state == CallState.ringing) {
+      _showIncomingCallDialog();
+    }
+  }
+
+  void _showIncomingCallDialog() {
+    final cs = _callService;
+    if (cs == null) return;
+    final isVideo = cs.pendingOffer?['video'] as bool? ?? false;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.bgCard,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: BorderSide(color: AppTheme.cyan.withValues(alpha: 0.3)),
+        ),
+        title: Row(
+          children: [
+            Icon(
+              isVideo ? Icons.videocam_rounded : Icons.phone_in_talk_rounded,
+              color: AppTheme.green,
+              size: 24,
+            ),
+            const SizedBox(width: 10),
+            Text(
+              'Incoming Call',
+              style: GoogleFonts.firaCode(
+                color: AppTheme.textPrimary,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ],
+        ),
+        content: Text(
+          isVideo ? 'Incoming video call...' : 'Incoming audio call...',
+          style: GoogleFonts.firaCode(
+            color: AppTheme.textSecondary,
+            fontSize: 13,
+          ),
+        ),
+        actions: [
+          TextButton.icon(
+            icon: const Icon(Icons.call_end_rounded, color: AppTheme.red),
+            label: Text(
+              'Decline',
+              style: GoogleFonts.firaCode(color: AppTheme.red, fontSize: 12),
+            ),
+            onPressed: () {
+              Navigator.pop(ctx);
+              cs.rejectCall();
+            },
+          ),
+          ElevatedButton.icon(
+            icon: const Icon(Icons.call_rounded, color: Colors.white),
+            label: Text(
+              'Accept',
+              style: GoogleFonts.firaCode(color: Colors.white, fontSize: 12),
+            ),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.green,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+            ),
+            onPressed: () {
+              Navigator.pop(ctx);
+              cs.answerCall();
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => CallScreen(callService: cs)),
+              );
+            },
+          ),
+        ],
+      ),
+    );
   }
 
   void _onMeshUpdate() {
@@ -628,6 +720,8 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   @override
   void dispose() {
     _incomingSub?.cancel();
+    _callService?.removeListener(_onCallUpdate);
+    _callService?.dispose();
     widget.meshController?.removeListener(_onMeshUpdate);
     _msgController.dispose();
     _scrollController.dispose();
@@ -701,6 +795,46 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         ],
       ),
       actions: [
+        // Audio call button
+        IconButton(
+          icon: const Icon(
+            Icons.phone_outlined,
+            color: AppTheme.green,
+            size: 22,
+          ),
+          tooltip: 'Audio call',
+          onPressed: _callService == null
+              ? null
+              : () {
+                  _callService!.startCall(video: false);
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => CallScreen(callService: _callService!),
+                    ),
+                  );
+                },
+        ),
+        // Video call button
+        IconButton(
+          icon: const Icon(
+            Icons.videocam_outlined,
+            color: AppTheme.cyan,
+            size: 22,
+          ),
+          tooltip: 'Video call',
+          onPressed: _callService == null
+              ? null
+              : () {
+                  _callService!.startCall(video: true);
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => CallScreen(callService: _callService!),
+                    ),
+                  );
+                },
+        ),
         if (widget.isGroupChat)
           IconButton(
             icon: const Icon(Icons.share, color: AppTheme.cyan),

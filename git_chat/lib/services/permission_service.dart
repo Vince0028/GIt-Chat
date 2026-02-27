@@ -15,6 +15,8 @@ class PermissionService {
       Permission.bluetoothConnect, // Required for Android 12+
       Permission.bluetoothAdvertise, // Required for Android 12+
       Permission.nearbyWifiDevices, // Required for Android 13+
+      Permission.camera, // Required for video calls
+      Permission.microphone, // Required for audio/video calls
     ].request();
 
     // Check location service is enabled (not just the permission — the GPS toggle)
