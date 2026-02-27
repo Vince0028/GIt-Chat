@@ -68,6 +68,13 @@ class MeshController extends ChangeNotifier {
   // messageId -> { 'totalChunks': int, 'meta': Map, 'chunks': Map<int,String> }
   final Map<String, Map<String, dynamic>> _chunkCollectors = {};
 
+  // Large image file payload tracking
+  final Map<int, String> _pendingImageFiles = {}; // payloadId -> temp file path
+  final Map<int, Map<String, dynamic>> _pendingImageMeta =
+      {}; // payloadId -> metadata
+  final Map<int, String> _payloadToMsgId = {}; // payloadId -> messageId
+  final Map<String, double> _fileTransferProgress = {}; // messageId -> 0.0..1.0
+
   final StreamController<ChatMessage> _incomingMessages =
       StreamController<ChatMessage>.broadcast();
 
@@ -90,6 +97,8 @@ class MeshController extends ChangeNotifier {
   Stream<MeshGroup> get incomingGroupInvites => _incomingGroupInvites.stream;
   Stream<MeshGroup> get passwordProtectedInvites =>
       _passwordProtectedInvites.stream;
+  Map<String, double> get fileTransferProgress =>
+      Map.unmodifiable(_fileTransferProgress);
 
   // ── Lifecycle ────────────────────────────────────────
 
@@ -200,10 +209,42 @@ class MeshController extends ChangeNotifier {
       onPayLoadRecieved: (endpointId, payload) {
         if (payload.type == PayloadType.BYTES && payload.bytes != null) {
           _handleIncomingPayload(payload.bytes!, endpointId);
+        } else if (payload.type == PayloadType.FILE) {
+          final path = payload.uri ?? payload.filePath;
+          if (path != null) {
+            debugPrint('[MESH] FILE payload incoming id=${payload.id} → $path');
+            final resolvedPath = path.startsWith('file://')
+                ? Uri.parse(path).toFilePath()
+                : path;
+            _pendingImageFiles[payload.id] = resolvedPath;
+          }
         }
       },
       onPayloadTransferUpdate: (endpointId, update) {
-        debugPrint('[MESH] Transfer ${update.id} status=${update.status}');
+        // Track progress for large image transfers
+        final msgId = _payloadToMsgId[update.id];
+        if (msgId != null && update.totalBytes > 0) {
+          _fileTransferProgress[msgId] =
+              update.bytesTransferred / update.totalBytes;
+          notifyListeners();
+        }
+        if (update.status == PayloadStatus.SUCCESS) {
+          debugPrint('[MESH] Transfer ${update.id} SUCCESS');
+          if (msgId != null) {
+            _fileTransferProgress.remove(msgId);
+            _payloadToMsgId.remove(update.id);
+          }
+          _tryProcessImage(update.id);
+        } else if (update.status == PayloadStatus.FAILURE) {
+          debugPrint('[MESH] Transfer ${update.id} FAILED');
+          _pendingImageFiles.remove(update.id);
+          _pendingImageMeta.remove(update.id);
+          if (msgId != null) {
+            _fileTransferProgress.remove(msgId);
+            _payloadToMsgId.remove(update.id);
+          }
+          notifyListeners();
+        }
       },
     );
     // Only create a new peer entry if _onConnectionResult hasn't already done so.
@@ -272,7 +313,8 @@ class MeshController extends ChangeNotifier {
             _handleIncomingDelete(packet.payload);
             break;
           case MeshPacketType.imageMetadata:
-            break; // legacy — no longer used
+            _handleImageMetadata(packet.payload, sourceId);
+            break;
           case MeshPacketType.imageChunk:
             _handleImageChunk(packet.payload, sourceId);
             break;
@@ -430,6 +472,80 @@ class MeshController extends ChangeNotifier {
     );
   }
 
+  // ── Large Image File Handling ────────────────────────
+
+  void _handleImageMetadata(Map<String, dynamic> data, String sourceId) {
+    final rawPayloadId = data['payloadId'];
+    if (rawPayloadId == null) return;
+    final payloadId = (rawPayloadId as num).toInt();
+    final msgId = data['id'] as String?;
+    debugPrint('[MESH] Got image metadata for payloadId=$payloadId');
+    _pendingImageMeta[payloadId] = data;
+    if (msgId != null) {
+      _payloadToMsgId[payloadId] = msgId;
+      _fileTransferProgress[msgId] = 0.0;
+      notifyListeners();
+    }
+    _tryProcessImage(payloadId);
+  }
+
+  void _tryProcessImage(int payloadId) {
+    if (_pendingImageFiles.containsKey(payloadId) &&
+        _pendingImageMeta.containsKey(payloadId)) {
+      final tempPath = _pendingImageFiles.remove(payloadId)!;
+      final meta = _pendingImageMeta.remove(payloadId)!;
+      _saveAndEmitImage(tempPath, meta);
+    }
+  }
+
+  Future<void> _saveAndEmitImage(
+    String tempPath,
+    Map<String, dynamic> meta,
+  ) async {
+    try {
+      final msgId = meta['id'] as String;
+      final imagesDir = await getImagesDir();
+      final destPath = '$imagesDir/$msgId.jpg';
+      await File(tempPath).copy(destPath);
+      debugPrint('[MESH] Image saved to $destPath');
+
+      // Clean up progress tracking
+      _fileTransferProgress.remove(msgId);
+
+      final myUsername = StorageService.getUsername() ?? 'anon';
+      bool isForMe = false;
+      final groupId = meta['groupId'] as String?;
+      if (groupId != null && groupId.isNotEmpty) {
+        isForMe = StorageService.isGroupMember(groupId);
+      } else {
+        final to = meta['to'] as String? ?? '';
+        isForMe = (to == myUsername || to == 'broadcast');
+      }
+      if (!isForMe) return;
+
+      final message = ChatMessage(
+        id: msgId,
+        from: meta['from'] as String,
+        to: meta['to'] as String,
+        body: destPath,
+        timestamp: DateTime.fromMillisecondsSinceEpoch(
+          meta['timestamp'] as int,
+        ),
+        ttl: 0,
+        groupId: groupId,
+        messageType: 'image_file',
+      );
+
+      if (_seenMessageIds.contains(msgId)) return;
+      _seenMessageIds.add(msgId);
+      StorageService.saveMessage(message);
+      _incomingMessages.add(message);
+      notifyListeners();
+    } catch (e) {
+      debugPrint('[MESH] Failed to save received image: $e');
+    }
+  }
+
   // ── Group Invite Handling ────────────────────────────
 
   void _handleGroupInvite(MeshGroup group, String sourceId) {
@@ -527,6 +643,48 @@ class MeshController extends ChangeNotifier {
     debugPrint(
       '[MESH] ✅ All $totalChunks chunks sent for ${meta.id.substring(0, 6)}',
     );
+  }
+
+  /// Send a large image via sendFilePayload (Wi-Fi Direct) with progress
+  Future<void> sendLargeImage(ChatMessage meta, String filePath) async {
+    if (_seenMessageIds.contains(meta.id)) return;
+    _seenMessageIds.add(meta.id);
+    StorageService.saveMessage(meta);
+    _fileTransferProgress[meta.id] = 0.0;
+    notifyListeners();
+
+    final peers = connectedPeers;
+    if (peers.isEmpty) {
+      _fileTransferProgress.remove(meta.id);
+      notifyListeners();
+      return;
+    }
+
+    for (final peer in peers) {
+      try {
+        final payloadId = await Nearby().sendFilePayload(
+          peer.endpointId,
+          filePath,
+        );
+        _payloadToMsgId[payloadId] = meta.id;
+        debugPrint(
+          '[MESH] sendFilePayload id=$payloadId to ${peer.endpointId}',
+        );
+
+        // Send metadata so receiver knows which message this file belongs to
+        final metaMap = {...meta.toMap(), 'payloadId': payloadId};
+        final metaPacket = MeshPacket(
+          type: MeshPacketType.imageMetadata,
+          payload: metaMap,
+        );
+        final bytes = Uint8List.fromList(
+          utf8.encode(jsonEncode(metaPacket.toMap())),
+        );
+        await Nearby().sendBytesPayload(peer.endpointId, bytes);
+      } catch (e) {
+        debugPrint('[MESH] Large image send failed to ${peer.endpointId}: $e');
+      }
+    }
   }
 
   /// Edit a local message and propagate the change to all connected peers

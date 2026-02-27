@@ -223,30 +223,49 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       final picker = ImagePicker();
       final picked = await picker.pickImage(
         source: source,
-        maxWidth: 800, // Good quality — chunking handles larger payloads
-        maxHeight: 800,
-        imageQuality: 65,
+        maxWidth: 1024,
+        maxHeight: 1024,
+        imageQuality: 75,
       );
       if (picked == null) return;
 
       final bytes = await picked.readAsBytes();
-      final b64 = base64Encode(bytes);
-      debugPrint(
-        '[CHAT] Image picked: ${bytes.length} bytes, base64: ${b64.length} chars',
-      );
+      debugPrint('[CHAT] Image picked: ${bytes.length} bytes');
 
-      final msg = ChatMessage(
-        id: _uuid.v4(),
-        from: _username,
-        to: widget.isGroupChat ? widget.groupId! : 'broadcast',
-        body: b64,
-        timestamp: DateTime.now(),
-        ttl: 0,
-        groupId: widget.groupId,
-        messageType: 'image',
-      );
+      final msgId = _uuid.v4();
 
-      await widget.meshController?.sendChunkedImage(msg);
+      if (bytes.length < 500000) {
+        // ── Small image: instant chunking ──
+        final b64 = base64Encode(bytes);
+        final msg = ChatMessage(
+          id: msgId,
+          from: _username,
+          to: widget.isGroupChat ? widget.groupId! : 'broadcast',
+          body: b64,
+          timestamp: DateTime.now(),
+          ttl: 0,
+          groupId: widget.groupId,
+          messageType: 'image',
+        );
+        await widget.meshController?.sendChunkedImage(msg);
+      } else {
+        // ── Large image: file payload with progress ──
+        final appDir = await widget.meshController!.getImagesDir();
+        final destPath = '$appDir/$msgId.jpg';
+        await picked.saveTo(destPath);
+
+        final meta = ChatMessage(
+          id: msgId,
+          from: _username,
+          to: widget.isGroupChat ? widget.groupId! : 'broadcast',
+          body: destPath,
+          timestamp: DateTime.now(),
+          ttl: 0,
+          groupId: widget.groupId,
+          messageType: 'image_file',
+        );
+        await widget.meshController?.sendLargeImage(meta, destPath);
+      }
       _loadMessages();
     } catch (e) {
       debugPrint('[CHAT] Image pick failed: $e');
@@ -971,40 +990,117 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   }
 
   Widget _buildImageBubble(ChatMessage msg, bool isMe) {
+    // Check if this image has an active file transfer (large image)
+    final progress = widget.meshController?.fileTransferProgress[msg.id];
+    final isTransferring = progress != null;
+
     // image_file: body is a local file path (sendFilePayload approach)
     if (msg.messageType == 'image_file') {
       final file = File(msg.body);
-      return GestureDetector(
-        onTap: () => _showFullScreenFile(file),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(12),
-          child: Image.file(
-            file,
-            width: 220,
-            height: 220,
-            fit: BoxFit.cover,
-            errorBuilder: (_, __, ___) => Container(
-              width: 220,
-              height: 60,
-              alignment: Alignment.center,
-              decoration: BoxDecoration(
-                color: AppTheme.bgCard,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: AppTheme.border),
-              ),
-              child: Text(
-                '⚠️ Image not found',
-                style: GoogleFonts.firaCode(
-                  color: AppTheme.textMuted,
-                  fontSize: 12,
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: Stack(
+          children: [
+            GestureDetector(
+              onTap: isTransferring ? null : () => _showFullScreenFile(file),
+              child: Image.file(
+                file,
+                width: 220,
+                height: 220,
+                fit: BoxFit.cover,
+                errorBuilder: (_, __, ___) => Container(
+                  width: 220,
+                  height: 100,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: AppTheme.bgCard,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: AppTheme.border),
+                  ),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      if (isTransferring) ...[
+                        SizedBox(
+                          width: 32,
+                          height: 32,
+                          child: CircularProgressIndicator(
+                            value: progress,
+                            strokeWidth: 3,
+                            color: AppTheme.cyan,
+                            backgroundColor: AppTheme.border,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Sending ${(progress * 100).toInt()}%',
+                          style: GoogleFonts.firaCode(
+                            color: AppTheme.cyan,
+                            fontSize: 11,
+                          ),
+                        ),
+                      ] else
+                        Text(
+                          '⚠️ Image not found',
+                          style: GoogleFonts.firaCode(
+                            color: AppTheme.textMuted,
+                            fontSize: 12,
+                          ),
+                        ),
+                    ],
+                  ),
                 ),
               ),
             ),
-          ),
+            // Progress overlay on the actual image
+            if (isTransferring)
+              Positioned.fill(
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: Colors.black54,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      SizedBox(
+                        width: 44,
+                        height: 44,
+                        child: CircularProgressIndicator(
+                          value: progress,
+                          strokeWidth: 3.5,
+                          color: AppTheme.cyan,
+                          backgroundColor: AppTheme.border.withValues(
+                            alpha: 0.4,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                        '${(progress * 100).toInt()}%',
+                        style: GoogleFonts.firaCode(
+                          color: Colors.white,
+                          fontSize: 14,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        isMe ? 'Sending...' : 'Receiving...',
+                        style: GoogleFonts.firaCode(
+                          color: AppTheme.cyan,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+          ],
         ),
       );
     }
-    // Fallback: legacy base64 image
+    // base64 image (chunked approach)
     try {
       final bytes = base64Decode(msg.body);
       return GestureDetector(
@@ -1013,8 +1109,8 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           borderRadius: BorderRadius.circular(12),
           child: Image.memory(
             bytes,
-            width: 200,
-            height: 200,
+            width: 220,
+            height: 220,
             fit: BoxFit.cover,
             gaplessPlayback: true,
           ),
