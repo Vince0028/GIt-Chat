@@ -1,7 +1,10 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:uuid/uuid.dart';
 import '../theme/app_theme.dart';
 import '../models/message.dart';
@@ -113,11 +116,241 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       timestamp: DateTime.now(),
       ttl: 5,
       groupId: widget.groupId,
+      messageType: 'text',
     );
 
     widget.meshController?.broadcastLocalMessage(message);
     _msgController.clear();
     _loadMessages();
+  }
+
+  // ── Image / Link ───────────────────────────────────────
+
+  void _showAttachMenu() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppTheme.bgCard,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) => Padding(
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                width: 36,
+                height: 4,
+                margin: const EdgeInsets.only(bottom: 14),
+                decoration: BoxDecoration(
+                  color: AppTheme.border,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            Text(
+              '> attach',
+              style: GoogleFonts.firaCode(
+                color: AppTheme.textSecondary,
+                fontSize: 11,
+              ),
+            ),
+            const SizedBox(height: 12),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(
+                Icons.photo_library_outlined,
+                color: AppTheme.cyan,
+                size: 22,
+              ),
+              title: Text(
+                'Gallery',
+                style: GoogleFonts.firaCode(
+                  color: AppTheme.textPrimary,
+                  fontSize: 14,
+                ),
+              ),
+              onTap: () {
+                Navigator.pop(ctx);
+                _pickAndSend(ImageSource.gallery);
+              },
+            ),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(
+                Icons.camera_alt_outlined,
+                color: AppTheme.green,
+                size: 22,
+              ),
+              title: Text(
+                'Camera',
+                style: GoogleFonts.firaCode(
+                  color: AppTheme.textPrimary,
+                  fontSize: 14,
+                ),
+              ),
+              onTap: () {
+                Navigator.pop(ctx);
+                _pickAndSend(ImageSource.camera);
+              },
+            ),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.link, color: AppTheme.purple, size: 22),
+              title: Text(
+                'Send Link',
+                style: GoogleFonts.firaCode(
+                  color: AppTheme.textPrimary,
+                  fontSize: 14,
+                ),
+              ),
+              onTap: () {
+                Navigator.pop(ctx);
+                _showLinkDialog();
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _pickAndSend(ImageSource source) async {
+    try {
+      final picker = ImagePicker();
+      final picked = await picker.pickImage(
+        source: source,
+        maxWidth: 300,
+        maxHeight: 300,
+        imageQuality: 35,
+      );
+      if (picked == null) return;
+      final bytes = await picked.readAsBytes();
+      final base64Str = base64Encode(bytes);
+      // Check size — mesh BYTES payload limit is ~32KB
+      if (base64Str.length > 30000) {
+        if (mounted) {
+          _showTopNotification(
+            'Image too large — try a smaller photo',
+            color: AppTheme.red,
+            icon: Icons.error_outline,
+          );
+        }
+        return;
+      }
+      final msg = ChatMessage(
+        id: _uuid.v4(),
+        from: _username,
+        to: widget.isGroupChat ? widget.groupId! : 'broadcast',
+        body: base64Str,
+        timestamp: DateTime.now(),
+        ttl: 0, // no relay for images — too big
+        groupId: widget.groupId,
+        messageType: 'image',
+      );
+      widget.meshController?.broadcastLocalMessage(msg);
+      _loadMessages();
+    } catch (e) {
+      debugPrint('[CHAT] Image pick failed: $e');
+    }
+  }
+
+  void _showLinkDialog() {
+    final linkCtrl = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.bgCard,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: const BorderSide(color: AppTheme.border),
+        ),
+        title: Text(
+          'Send a Link',
+          style: GoogleFonts.firaCode(
+            color: AppTheme.textPrimary,
+            fontSize: 15,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        content: TextField(
+          controller: linkCtrl,
+          autofocus: true,
+          style: GoogleFonts.firaCode(
+            color: AppTheme.textPrimary,
+            fontSize: 13,
+          ),
+          decoration: InputDecoration(
+            hintText: 'https://...',
+            hintStyle: GoogleFonts.firaCode(
+              color: AppTheme.textMuted,
+              fontSize: 13,
+            ),
+            filled: true,
+            fillColor: AppTheme.bgDark,
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(8),
+              borderSide: const BorderSide(color: AppTheme.border),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(8),
+              borderSide: const BorderSide(color: AppTheme.border),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(8),
+              borderSide: const BorderSide(color: AppTheme.purple),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text(
+              'CANCEL',
+              style: GoogleFonts.firaCode(
+                color: AppTheme.textMuted,
+                fontSize: 12,
+              ),
+            ),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.purple,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+            ),
+            onPressed: () {
+              final url = linkCtrl.text.trim();
+              if (url.isEmpty) return;
+              Navigator.pop(ctx);
+              final msg = ChatMessage(
+                id: _uuid.v4(),
+                from: _username,
+                to: widget.isGroupChat ? widget.groupId! : 'broadcast',
+                body: url,
+                timestamp: DateTime.now(),
+                ttl: 5,
+                groupId: widget.groupId,
+                messageType: 'link',
+              );
+              widget.meshController?.broadcastLocalMessage(msg);
+              _loadMessages();
+            },
+            child: Text(
+              'SEND',
+              style: GoogleFonts.firaCode(
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   // ── Edit / Delete ─────────────────────────────────────
@@ -619,6 +852,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   Widget _buildMessageBubble(ChatMessage msg, bool isMe, bool showHeader) {
     final isDeleted = msg.isDeleted;
     final isEdited = msg.isEdited && !isDeleted;
+    final type = isDeleted ? 'text' : msg.messageType;
 
     return GestureDetector(
       onLongPress: isMe ? () => _onLongPressMessage(msg) : null,
@@ -677,58 +911,147 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                     ],
                   ),
                 ),
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 14,
-                  vertical: 10,
-                ),
-                decoration: BoxDecoration(
-                  color: isDeleted
-                      ? AppTheme.bgCard
-                      : isMe
-                      ? AppTheme.green.withValues(alpha: 0.12)
-                      : AppTheme.bgCard,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(
-                    color: isDeleted
-                        ? AppTheme.border.withValues(alpha: 0.4)
-                        : isMe
-                        ? AppTheme.green.withValues(alpha: 0.3)
-                        : AppTheme.border,
-                  ),
-                ),
-                child: isDeleted
-                    ? Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Icon(
-                            Icons.delete_outline,
-                            size: 13,
-                            color: AppTheme.textMuted,
-                          ),
-                          const SizedBox(width: 6),
-                          Text(
-                            'Message deleted',
-                            style: GoogleFonts.firaCode(
-                              color: AppTheme.textMuted,
-                              fontSize: 12,
-                              fontStyle: FontStyle.italic,
-                            ),
-                          ),
-                        ],
-                      )
-                    : Text(
-                        msg.body,
-                        style: GoogleFonts.firaCode(
-                          color: AppTheme.textPrimary,
-                          fontSize: 13,
-                          height: 1.4,
-                        ),
-                      ),
-              ),
+              // Bubble body
+              if (type == 'image')
+                _buildImageBubble(msg, isMe)
+              else if (type == 'link')
+                _buildLinkBubble(msg, isMe)
+              else
+                _buildTextBubble(msg, isMe, isDeleted),
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildTextBubble(ChatMessage msg, bool isMe, bool isDeleted) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: isDeleted
+            ? AppTheme.bgCard
+            : isMe
+            ? AppTheme.green.withValues(alpha: 0.12)
+            : AppTheme.bgCard,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: isDeleted
+              ? AppTheme.border.withValues(alpha: 0.4)
+              : isMe
+              ? AppTheme.green.withValues(alpha: 0.3)
+              : AppTheme.border,
+        ),
+      ),
+      child: isDeleted
+          ? Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  Icons.delete_outline,
+                  size: 13,
+                  color: AppTheme.textMuted,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  'Message deleted',
+                  style: GoogleFonts.firaCode(
+                    color: AppTheme.textMuted,
+                    fontSize: 12,
+                    fontStyle: FontStyle.italic,
+                  ),
+                ),
+              ],
+            )
+          : Text(
+              msg.body,
+              style: GoogleFonts.firaCode(
+                color: AppTheme.textPrimary,
+                fontSize: 13,
+                height: 1.4,
+              ),
+            ),
+    );
+  }
+
+  Widget _buildImageBubble(ChatMessage msg, bool isMe) {
+    try {
+      final bytes = base64Decode(msg.body);
+      return GestureDetector(
+        onTap: () => _showFullScreenImage(bytes),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(12),
+          child: Image.memory(
+            bytes,
+            width: 200,
+            height: 200,
+            fit: BoxFit.cover,
+            gaplessPlayback: true,
+          ),
+        ),
+      );
+    } catch (_) {
+      return Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: AppTheme.bgCard,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: AppTheme.border),
+        ),
+        child: Text(
+          '⚠️ Could not load image',
+          style: GoogleFonts.firaCode(color: AppTheme.textMuted, fontSize: 12),
+        ),
+      );
+    }
+  }
+
+  Widget _buildLinkBubble(ChatMessage msg, bool isMe) {
+    return GestureDetector(
+      onTap: () async {
+        final uri = Uri.tryParse(msg.body);
+        if (uri != null && await canLaunchUrl(uri)) {
+          await launchUrl(uri, mode: LaunchMode.externalApplication);
+        }
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          color: AppTheme.purple.withValues(alpha: 0.10),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: AppTheme.purple.withValues(alpha: 0.35)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.link, size: 16, color: AppTheme.purple),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(
+                msg.body,
+                style: GoogleFonts.firaCode(
+                  color: AppTheme.purple,
+                  fontSize: 12,
+                  decoration: TextDecoration.underline,
+                  decorationColor: AppTheme.purple,
+                ),
+                overflow: TextOverflow.ellipsis,
+                maxLines: 2,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showFullScreenImage(Uint8List bytes) {
+    showDialog(
+      context: context,
+      barrierColor: Colors.black87,
+      builder: (ctx) => GestureDetector(
+        onTap: () => Navigator.pop(ctx),
+        child: Center(child: InteractiveViewer(child: Image.memory(bytes))),
       ),
     );
   }
@@ -744,6 +1067,24 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         top: false,
         child: Row(
           children: [
+            // + attach button
+            GestureDetector(
+              onTap: _showAttachMenu,
+              child: Container(
+                padding: const EdgeInsets.all(8),
+                margin: const EdgeInsets.only(right: 8),
+                decoration: BoxDecoration(
+                  color: AppTheme.bgDark,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppTheme.border),
+                ),
+                child: const Icon(
+                  Icons.add,
+                  color: AppTheme.textSecondary,
+                  size: 18,
+                ),
+              ),
+            ),
             Text(
               '\$ ',
               style: GoogleFonts.firaCode(

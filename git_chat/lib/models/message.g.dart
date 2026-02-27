@@ -27,13 +27,14 @@ class ChatMessageAdapter extends TypeAdapter<ChatMessage> {
       isRelayed: fields[7] as bool,
       isEdited: fields[8] as bool,
       isDeleted: fields[9] as bool,
+      messageType: fields[10] as String,
     );
   }
 
   @override
   void write(BinaryWriter writer, ChatMessage obj) {
     writer
-      ..writeByte(10)
+      ..writeByte(11)
       ..writeByte(0)
       ..write(obj.id)
       ..writeByte(1)
@@ -53,7 +54,9 @@ class ChatMessageAdapter extends TypeAdapter<ChatMessage> {
       ..writeByte(8)
       ..write(obj.isEdited)
       ..writeByte(9)
-      ..write(obj.isDeleted);
+      ..write(obj.isDeleted)
+      ..writeByte(10)
+      ..write(obj.messageType);
   }
 
   @override

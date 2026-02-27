@@ -34,6 +34,10 @@ class ChatMessage extends HiveObject {
   @HiveField(9)
   bool isDeleted;
 
+  /// 'text' | 'image' | 'link'
+  @HiveField(10)
+  String messageType;
+
   ChatMessage({
     required this.id,
     required this.from,
@@ -45,37 +49,34 @@ class ChatMessage extends HiveObject {
     this.isRelayed = false,
     this.isEdited = false,
     this.isDeleted = false,
+    this.messageType = 'text',
   });
 
-  /// Convert to a Map for mesh transmission
-  Map<String, dynamic> toMap() {
-    return {
-      'id': id,
-      'from': from,
-      'to': to,
-      'body': body,
-      'timestamp': timestamp.millisecondsSinceEpoch,
-      'ttl': ttl,
-      'groupId': groupId,
-      'isRelayed': isRelayed,
-      'isEdited': isEdited,
-      'isDeleted': isDeleted,
-    };
-  }
+  Map<String, dynamic> toMap() => {
+    'id': id,
+    'from': from,
+    'to': to,
+    'body': body,
+    'timestamp': timestamp.millisecondsSinceEpoch,
+    'ttl': ttl,
+    'groupId': groupId,
+    'isRelayed': isRelayed,
+    'isEdited': isEdited,
+    'isDeleted': isDeleted,
+    'messageType': messageType,
+  };
 
-  /// Create from a Map received over mesh
-  factory ChatMessage.fromMap(Map<String, dynamic> map) {
-    return ChatMessage(
-      id: map['id'] as String,
-      from: map['from'] as String,
-      to: map['to'] as String,
-      body: map['body'] as String,
-      timestamp: DateTime.fromMillisecondsSinceEpoch(map['timestamp'] as int),
-      ttl: map['ttl'] as int? ?? 3,
-      groupId: map['groupId'] as String?,
-      isRelayed: map['isRelayed'] as bool? ?? false,
-      isEdited: map['isEdited'] as bool? ?? false,
-      isDeleted: map['isDeleted'] as bool? ?? false,
-    );
-  }
+  factory ChatMessage.fromMap(Map<String, dynamic> map) => ChatMessage(
+    id: map['id'] as String,
+    from: map['from'] as String,
+    to: map['to'] as String,
+    body: map['body'] as String,
+    timestamp: DateTime.fromMillisecondsSinceEpoch(map['timestamp'] as int),
+    ttl: map['ttl'] as int? ?? 3,
+    groupId: map['groupId'] as String?,
+    isRelayed: map['isRelayed'] as bool? ?? false,
+    isEdited: map['isEdited'] as bool? ?? false,
+    isDeleted: map['isDeleted'] as bool? ?? false,
+    messageType: map['messageType'] as String? ?? 'text',
+  );
 }

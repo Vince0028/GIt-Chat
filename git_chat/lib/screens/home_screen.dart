@@ -39,8 +39,9 @@ class _HomeScreenState extends State<HomeScreen> {
     });
 
     // Listen for password-protected group invites
-    _passwordInviteSub =
-        widget.meshController.passwordProtectedInvites.listen((group) {
+    _passwordInviteSub = widget.meshController.passwordProtectedInvites.listen((
+      group,
+    ) {
       _showPasswordDialog(group);
     });
 
@@ -140,8 +141,11 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
               decoration: InputDecoration(
                 hintText: 'password',
-                prefixIcon:
-                    const Icon(Icons.key, color: AppTheme.orange, size: 18),
+                prefixIcon: const Icon(
+                  Icons.key,
+                  color: AppTheme.orange,
+                  size: 18,
+                ),
                 hintStyle: GoogleFonts.firaCode(
                   color: AppTheme.textMuted,
                   fontSize: 14,
@@ -197,9 +201,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 );
               }
             },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppTheme.orange,
-            ),
+            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.orange),
             child: Text(
               'JOIN',
               style: GoogleFonts.firaCode(
@@ -214,15 +216,17 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _openGroupChat(MeshGroup group) {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => ChatScreen(
-          meshController: widget.meshController,
-          groupId: group.id,
-          groupName: group.name,
-        ),
-      ),
-    ).then((_) => _loadGroups());
+    Navigator.of(context)
+        .push(
+          MaterialPageRoute(
+            builder: (_) => ChatScreen(
+              meshController: widget.meshController,
+              groupId: group.id,
+              groupName: group.name,
+            ),
+          ),
+        )
+        .then((_) => _loadGroups());
   }
 
   void _openBroadcastChat() {
@@ -239,14 +243,119 @@ class _HomeScreenState extends State<HomeScreen> {
   void _createGroup() async {
     final result = await Navigator.of(context).push<MeshGroup>(
       MaterialPageRoute(
-        builder: (_) => CreateGroupScreen(
-          meshController: widget.meshController,
-        ),
+        builder: (_) =>
+            CreateGroupScreen(meshController: widget.meshController),
       ),
     );
     if (result != null) {
       _loadGroups();
     }
+  }
+
+  void _showInfoDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.bgCard,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: const BorderSide(color: AppTheme.border),
+        ),
+        title: Row(
+          children: [
+            const Icon(Icons.hub_outlined, color: AppTheme.cyan, size: 20),
+            const SizedBox(width: 8),
+            Text(
+              'How GitChat Works',
+              style: GoogleFonts.firaCode(
+                color: AppTheme.textPrimary,
+                fontSize: 14,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ],
+        ),
+        content: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _infoSection(
+                '🔗 Technology',
+                AppTheme.cyan,
+                'Uses Google Nearby Connections API with P2P_CLUSTER strategy — a fully decentralised mesh where every device is equal (no server, no internet needed).',
+              ),
+              _infoSection(
+                '📡 Radios Used',
+                AppTheme.green,
+                '• Bluetooth Low Energy (BLE)\n• Bluetooth Classic\n• Wi-Fi Direct (P2P)\n\nAll three are used simultaneously for fastest discovery.',
+              ),
+              _infoSection(
+                '📏 Range',
+                AppTheme.orange,
+                '• Bluetooth: ~10–30 m\n• Wi-Fi Direct: ~30–100 m\n\nActual range depends on walls, interference, and device hardware.',
+              ),
+              _infoSection(
+                '✉️ Message Limit',
+                AppTheme.textPrimary,
+                'Text messages: up to ~31 KB per message (mesh BYTES payload limit). Typical chat messages are well under 1 KB.',
+              ),
+              _infoSection(
+                '🖼️ Image Limit',
+                AppTheme.purple,
+                'Images are compressed to 300×300 px at 35% quality before sending (~8–25 KB). They are NOT relayed (TTL=0) to avoid flooding the mesh.',
+              ),
+              _infoSection(
+                '🔁 Relay / Mesh Hop',
+                AppTheme.textSecondary,
+                'Text messages have TTL=5, meaning they can hop through up to 5 intermediate devices to reach peers out of direct range — extending the effective mesh range.',
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text(
+              'GOT IT',
+              style: GoogleFonts.firaCode(
+                color: AppTheme.cyan,
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _infoSection(String title, Color color, String body) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: GoogleFonts.firaCode(
+              color: color,
+              fontSize: 12,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            body,
+            style: GoogleFonts.firaCode(
+              color: AppTheme.textSecondary,
+              fontSize: 11,
+              height: 1.5,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -296,7 +405,7 @@ class _HomeScreenState extends State<HomeScreen> {
         actions: [
           // Peer count badge
           Container(
-            margin: const EdgeInsets.only(right: 12),
+            margin: const EdgeInsets.only(right: 4),
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
             decoration: BoxDecoration(
               color: peerCount > 0
@@ -319,14 +428,23 @@ class _HomeScreenState extends State<HomeScreen> {
                 Text(
                   '$peerCount',
                   style: GoogleFonts.firaCode(
-                    color:
-                        peerCount > 0 ? AppTheme.cyan : AppTheme.textMuted,
+                    color: peerCount > 0 ? AppTheme.cyan : AppTheme.textMuted,
                     fontSize: 12,
                     fontWeight: FontWeight.bold,
                   ),
                 ),
               ],
             ),
+          ),
+          // ? Info button
+          IconButton(
+            icon: const Icon(
+              Icons.help_outline_rounded,
+              size: 20,
+              color: AppTheme.textMuted,
+            ),
+            tooltip: 'How it works',
+            onPressed: _showInfoDialog,
           ),
         ],
       ),
@@ -369,10 +487,12 @@ class _HomeScreenState extends State<HomeScreen> {
 
                 // Group list
                 if (_groups.isEmpty) _buildEmptyGroups(),
-                ..._groups.map((g) => Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: _buildGroupTile(g),
-                )),
+                ..._groups.map(
+                  (g) => Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: _buildGroupTile(g),
+                  ),
+                ),
               ],
             ),
           ),
@@ -426,9 +546,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           const Spacer(),
           Text(
-            widget.meshController.isMeshActive
-                ? 'mesh active'
-                : 'mesh offline',
+            widget.meshController.isMeshActive ? 'mesh active' : 'mesh offline',
             style: GoogleFonts.firaCode(
               color: widget.meshController.isMeshActive
                   ? AppTheme.green
@@ -443,9 +561,27 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _buildGlobalChatTile() {
     final broadcastMsgs = StorageService.getMessages();
-    final lastMsg =
-        broadcastMsgs.isNotEmpty ? broadcastMsgs.last.body : 'No messages yet';
-    final msgCount = broadcastMsgs.length;
+    // Find the last non-deleted message for preview
+    final lastVisible = broadcastMsgs.lastWhere(
+      (m) => !m.isDeleted,
+      orElse: () => broadcastMsgs.isNotEmpty
+          ? broadcastMsgs.last
+          : throw StateError('empty'),
+    );
+    final hasAny = broadcastMsgs.isNotEmpty;
+    String lastMsg = 'No messages yet';
+    if (hasAny) {
+      if (lastVisible.isDeleted) {
+        lastMsg = '🗑 Message deleted';
+      } else if (lastVisible.messageType == 'image') {
+        lastMsg = '📷 Image';
+      } else if (lastVisible.messageType == 'link') {
+        lastMsg = '🔗 ${lastVisible.body}';
+      } else {
+        lastMsg = lastVisible.body;
+      }
+    }
+    final msgCount = broadcastMsgs.where((m) => !m.isDeleted).length;
 
     return GestureDetector(
       onTap: _openBroadcastChat,
@@ -471,11 +607,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 color: AppTheme.green.withValues(alpha: 0.12),
                 borderRadius: BorderRadius.circular(10),
               ),
-              child: const Icon(
-                Icons.public,
-                color: AppTheme.green,
-                size: 24,
-              ),
+              child: const Icon(Icons.public, color: AppTheme.green, size: 24),
             ),
             const SizedBox(width: 14),
             Expanded(
@@ -528,10 +660,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             if (msgCount > 0)
               Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 8,
-                  vertical: 4,
-                ),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                 decoration: BoxDecoration(
                   color: AppTheme.green.withValues(alpha: 0.15),
                   borderRadius: BorderRadius.circular(12),
@@ -558,8 +687,23 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildGroupTile(MeshGroup group) {
-    final lastMsg = StorageService.getLastGroupMessage(group.id);
-    final preview = lastMsg?.body ?? 'No messages yet';
+    final allMsgs = StorageService.getMessages(groupId: group.id);
+    final lastMsg = allMsgs.lastWhere(
+      (m) => !m.isDeleted,
+      orElse: () => allMsgs.isNotEmpty ? allMsgs.last : throw StateError(''),
+    );
+    String preview = 'No messages yet';
+    if (allMsgs.isNotEmpty) {
+      if (lastMsg.isDeleted) {
+        preview = '🗑 Message deleted';
+      } else if (lastMsg.messageType == 'image') {
+        preview = '📷 Image';
+      } else if (lastMsg.messageType == 'link') {
+        preview = '🔗 ${lastMsg.body}';
+      } else {
+        preview = lastMsg.body;
+      }
+    }
 
     return GestureDetector(
       onTap: () => _openGroupChat(group),
@@ -579,11 +723,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 color: AppTheme.purple.withValues(alpha: 0.12),
                 borderRadius: BorderRadius.circular(10),
               ),
-              child: const Icon(
-                Icons.group,
-                color: AppTheme.purple,
-                size: 20,
-              ),
+              child: const Icon(Icons.group, color: AppTheme.purple, size: 20),
             ),
             const SizedBox(width: 14),
             Expanded(
@@ -760,10 +900,7 @@ class _HomeScreenState extends State<HomeScreen> {
               leading: const Icon(Icons.delete_outline, color: AppTheme.red),
               title: Text(
                 'Leave group',
-                style: GoogleFonts.firaCode(
-                  color: AppTheme.red,
-                  fontSize: 12,
-                ),
+                style: GoogleFonts.firaCode(color: AppTheme.red, fontSize: 12),
               ),
               onTap: () {
                 Navigator.pop(ctx);
