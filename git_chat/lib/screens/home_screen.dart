@@ -561,16 +561,12 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _buildGlobalChatTile() {
     final broadcastMsgs = StorageService.getMessages();
-    // Find the last non-deleted message for preview
-    final lastVisible = broadcastMsgs.lastWhere(
-      (m) => !m.isDeleted,
-      orElse: () => broadcastMsgs.isNotEmpty
-          ? broadcastMsgs.last
-          : throw StateError('empty'),
-    );
-    final hasAny = broadcastMsgs.isNotEmpty;
     String lastMsg = 'No messages yet';
-    if (hasAny) {
+    if (broadcastMsgs.isNotEmpty) {
+      final lastVisible = broadcastMsgs.lastWhere(
+        (m) => !m.isDeleted,
+        orElse: () => broadcastMsgs.last,
+      );
       if (lastVisible.isDeleted) {
         lastMsg = '🗑 Message deleted';
       } else if (lastVisible.messageType == 'image') {
@@ -688,12 +684,12 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _buildGroupTile(MeshGroup group) {
     final allMsgs = StorageService.getMessages(groupId: group.id);
-    final lastMsg = allMsgs.lastWhere(
-      (m) => !m.isDeleted,
-      orElse: () => allMsgs.isNotEmpty ? allMsgs.last : throw StateError(''),
-    );
     String preview = 'No messages yet';
     if (allMsgs.isNotEmpty) {
+      final lastMsg = allMsgs.lastWhere(
+        (m) => !m.isDeleted,
+        orElse: () => allMsgs.last,
+      );
       if (lastMsg.isDeleted) {
         preview = '🗑 Message deleted';
       } else if (lastMsg.messageType == 'image') {

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -222,35 +223,31 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       final picker = ImagePicker();
       final picked = await picker.pickImage(
         source: source,
-        maxWidth: 300,
-        maxHeight: 300,
-        imageQuality: 35,
+        maxWidth:
+            1024, // Decent quality — sendFilePayload (Wi-Fi Direct) handles large files
+        maxHeight: 1024,
+        imageQuality: 70,
       );
       if (picked == null) return;
-      final bytes = await picked.readAsBytes();
-      final base64Str = base64Encode(bytes);
-      // Check size — mesh BYTES payload limit is ~32KB
-      if (base64Str.length > 30000) {
-        if (mounted) {
-          _showTopNotification(
-            'Image too large — try a smaller photo',
-            color: AppTheme.red,
-            icon: Icons.error_outline,
-          );
-        }
-        return;
-      }
-      final msg = ChatMessage(
-        id: _uuid.v4(),
+
+      // Save to app documents so it persists and is accessible for sendFilePayload
+      final msgId = _uuid.v4();
+      final appDir = await widget.meshController!.getImagesDir();
+      final destPath = '$appDir/$msgId.jpg';
+      await picked.saveTo(destPath);
+
+      final meta = ChatMessage(
+        id: msgId,
         from: _username,
         to: widget.isGroupChat ? widget.groupId! : 'broadcast',
-        body: base64Str,
+        body: destPath, // local file path
         timestamp: DateTime.now(),
-        ttl: 0, // no relay for images — too big
+        ttl: 0,
         groupId: widget.groupId,
-        messageType: 'image',
+        messageType: 'image_file',
       );
-      widget.meshController?.broadcastLocalMessage(msg);
+
+      await widget.meshController?.sendImageMessage(meta, destPath);
       _loadMessages();
     } catch (e) {
       debugPrint('[CHAT] Image pick failed: $e');
@@ -912,7 +909,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                   ),
                 ),
               // Bubble body
-              if (type == 'image')
+              if (type == 'image' || type == 'image_file')
                 _buildImageBubble(msg, isMe)
               else if (type == 'link')
                 _buildLinkBubble(msg, isMe)
@@ -975,6 +972,40 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   }
 
   Widget _buildImageBubble(ChatMessage msg, bool isMe) {
+    // image_file: body is a local file path (sendFilePayload approach)
+    if (msg.messageType == 'image_file') {
+      final file = File(msg.body);
+      return GestureDetector(
+        onTap: () => _showFullScreenFile(file),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(12),
+          child: Image.file(
+            file,
+            width: 220,
+            height: 220,
+            fit: BoxFit.cover,
+            errorBuilder: (_, __, ___) => Container(
+              width: 220,
+              height: 60,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: AppTheme.bgCard,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppTheme.border),
+              ),
+              child: Text(
+                '⚠️ Image not found',
+                style: GoogleFonts.firaCode(
+                  color: AppTheme.textMuted,
+                  fontSize: 12,
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+    // Fallback: legacy base64 image
     try {
       final bytes = base64Decode(msg.body);
       return GestureDetector(
@@ -1004,6 +1035,28 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         ),
       );
     }
+  }
+
+  void _showFullScreenFile(File file) {
+    showDialog(
+      context: context,
+      barrierColor: Colors.black87,
+      builder: (ctx) => GestureDetector(
+        onTap: () => Navigator.pop(ctx),
+        child: Center(child: InteractiveViewer(child: Image.file(file))),
+      ),
+    );
+  }
+
+  void _showFullScreenImage(Uint8List bytes) {
+    showDialog(
+      context: context,
+      barrierColor: Colors.black87,
+      builder: (ctx) => GestureDetector(
+        onTap: () => Navigator.pop(ctx),
+        child: Center(child: InteractiveViewer(child: Image.memory(bytes))),
+      ),
+    );
   }
 
   Widget _buildLinkBubble(ChatMessage msg, bool isMe) {
@@ -1041,17 +1094,6 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
             ),
           ],
         ),
-      ),
-    );
-  }
-
-  void _showFullScreenImage(Uint8List bytes) {
-    showDialog(
-      context: context,
-      barrierColor: Colors.black87,
-      builder: (ctx) => GestureDetector(
-        onTap: () => Navigator.pop(ctx),
-        child: Center(child: InteractiveViewer(child: Image.memory(bytes))),
       ),
     );
   }

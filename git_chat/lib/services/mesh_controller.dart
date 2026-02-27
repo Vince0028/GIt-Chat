@@ -1,8 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:nearby_connections/nearby_connections.dart';
+import 'package:path_provider/path_provider.dart';
 import '../models/message.dart';
 import '../models/group.dart';
 import '../services/storage_service.dart';
@@ -29,6 +32,7 @@ enum MeshPacketType {
   groupJoinAck,
   messageEdit,
   messageDelete,
+  imageMetadata, // sent after sendFilePayload to give receiver the chat metadata
 }
 
 /// A wrapper for all data sent over the mesh
@@ -59,6 +63,12 @@ class MeshController extends ChangeNotifier {
   bool _isAdvertising = false;
   bool _isDiscovering = false;
 
+  // Image file payload tracking
+  // payloadId -> temp file path (received FILE payload, waiting for metadata)
+  final Map<int, String> _pendingImageFiles = {};
+  // payloadId -> message metadata (received BYTES metadata, waiting for file)
+  final Map<int, Map<String, dynamic>> _pendingImageMeta = {};
+
   final StreamController<ChatMessage> _incomingMessages =
       StreamController<ChatMessage>.broadcast();
 
@@ -83,6 +93,14 @@ class MeshController extends ChangeNotifier {
       _passwordProtectedInvites.stream;
 
   // ── Lifecycle ────────────────────────────────────────
+
+  /// Returns (and creates if needed) the persistent directory for mesh images
+  Future<String> getImagesDir() async {
+    final appDir = await getApplicationDocumentsDirectory();
+    final dir = Directory('${appDir.path}/mesh_images');
+    await dir.create(recursive: true);
+    return dir.path;
+  }
 
   @override
   void dispose() {
@@ -183,18 +201,37 @@ class MeshController extends ChangeNotifier {
       onPayLoadRecieved: (endpointId, payload) {
         if (payload.type == PayloadType.BYTES) {
           _handleIncomingPayload(payload.bytes!, endpointId);
+        } else if (payload.type == PayloadType.FILE) {
+          // payload.uri is used on Android 11+ (filePath deprecated)
+          final path = payload.uri ?? payload.filePath;
+          if (path != null) {
+            debugPrint('[MESH] FILE payload incoming id=${payload.id} → $path');
+            // uri may be a file:// or content:// URI — normalise to path string
+            final resolvedPath = path.startsWith('file://')
+                ? Uri.parse(path).toFilePath()
+                : path;
+            _pendingImageFiles[payload.id] = resolvedPath;
+          }
         }
       },
-      onPayloadTransferUpdate: (endpointId, payloadTransferUpdate) {},
+      onPayloadTransferUpdate: (endpointId, update) {
+        if (update.status == PayloadStatus.SUCCESS) {
+          debugPrint('[MESH] Transfer ${update.id} SUCCESS');
+          _tryProcessImage(update.id);
+        } else if (update.status == PayloadStatus.FAILURE) {
+          debugPrint('[MESH] Transfer ${update.id} FAILED');
+          _pendingImageFiles.remove(update.id);
+          _pendingImageMeta.remove(update.id);
+        }
+      },
     );
-    // Preserve isConnected if _onConnectionResult already fired before this await completed
-    final alreadyConnected = _peers[id]?.isConnected ?? false;
-    _peers[id] = MeshPeer(
-      endpointId: id,
-      endpointName: info.endpointName,
-      isConnected: alreadyConnected,
-    );
-    if (alreadyConnected) notifyListeners();
+    // Only create a new peer entry if _onConnectionResult hasn't already done so.
+    // This avoids overwriting isConnected=true with a stale false value.
+    if (!_peers.containsKey(id)) {
+      _peers[id] = MeshPeer(endpointId: id, endpointName: info.endpointName);
+    } else {
+      _peers[id]!.lastSeen = DateTime.now();
+    }
   }
 
   void _onConnectionResult(String id, Status status) {
@@ -252,6 +289,9 @@ class MeshController extends ChangeNotifier {
             break;
           case MeshPacketType.messageDelete:
             _handleIncomingDelete(packet.payload);
+            break;
+          case MeshPacketType.imageMetadata:
+            _handleImageMetadata(packet.payload, sourceId);
             break;
         }
       } else {
@@ -311,6 +351,74 @@ class MeshController extends ChangeNotifier {
     }
   }
 
+  // ── Image File Handling ──────────────────────────────
+
+  void _handleImageMetadata(Map<String, dynamic> data, String sourceId) {
+    final rawPayloadId = data['payloadId'];
+    if (rawPayloadId == null) return;
+    final payloadId = (rawPayloadId as num).toInt();
+    debugPrint('[MESH] Got image metadata for payloadId=$payloadId');
+    _pendingImageMeta[payloadId] = data;
+    _tryProcessImage(payloadId);
+  }
+
+  void _tryProcessImage(int payloadId) {
+    if (_pendingImageFiles.containsKey(payloadId) &&
+        _pendingImageMeta.containsKey(payloadId)) {
+      final tempPath = _pendingImageFiles.remove(payloadId)!;
+      final meta = _pendingImageMeta.remove(payloadId)!;
+      _saveAndEmitImage(tempPath, meta);
+    }
+  }
+
+  Future<void> _saveAndEmitImage(
+    String tempPath,
+    Map<String, dynamic> meta,
+  ) async {
+    try {
+      final msgId = meta['id'] as String;
+      final appDir = await getApplicationDocumentsDirectory();
+      final imagesDir = Directory('${appDir.path}/mesh_images');
+      await imagesDir.create(recursive: true);
+      final destPath = '${imagesDir.path}/$msgId.jpg';
+      await File(tempPath).copy(destPath);
+      debugPrint('[MESH] Image saved to $destPath');
+
+      final myUsername = StorageService.getUsername() ?? 'anon';
+      bool isForMe = false;
+      final groupId = meta['groupId'] as String?;
+      if (groupId != null && groupId.isNotEmpty) {
+        isForMe = StorageService.isGroupMember(groupId);
+      } else {
+        final to = meta['to'] as String? ?? '';
+        isForMe = (to == myUsername || to == 'broadcast');
+      }
+
+      if (!isForMe) return;
+
+      final message = ChatMessage(
+        id: msgId,
+        from: meta['from'] as String,
+        to: meta['to'] as String,
+        body: destPath,
+        timestamp: DateTime.fromMillisecondsSinceEpoch(
+          meta['timestamp'] as int,
+        ),
+        ttl: 0,
+        groupId: groupId,
+        messageType: 'image_file',
+      );
+
+      if (_seenMessageIds.contains(msgId)) return;
+      _seenMessageIds.add(msgId);
+      StorageService.saveMessage(message);
+      _incomingMessages.add(message);
+      notifyListeners();
+    } catch (e) {
+      debugPrint('[MESH] Failed to save received image: $e');
+    }
+  }
+
   // ── Group Invite Handling ────────────────────────────
 
   void _handleGroupInvite(MeshGroup group, String sourceId) {
@@ -352,6 +460,46 @@ class MeshController extends ChangeNotifier {
     await _sendPacketToPeers(
       MeshPacket(type: MeshPacketType.message, payload: message.toMap()),
     );
+  }
+
+  /// Send an image via Wi-Fi Direct (sendFilePayload) + BYTES metadata
+  Future<void> sendImageMessage(ChatMessage meta, String localFilePath) async {
+    if (_seenMessageIds.contains(meta.id)) return;
+    _seenMessageIds.add(meta.id);
+    StorageService.saveMessage(meta); // save sender's copy
+    notifyListeners();
+
+    final peers = connectedPeers;
+    if (peers.isEmpty) return;
+
+    for (final peer in peers) {
+      try {
+        // 1. Send file via Wi-Fi Direct — returns payloadId
+        final payloadId = await Nearby().sendFilePayload(
+          peer.endpointId,
+          localFilePath,
+        );
+        debugPrint(
+          '[MESH] sendFilePayload id=$payloadId to ${peer.endpointId}',
+        );
+
+        // 2. Send metadata so receiver knows which message this file belongs to
+        final metaMap = {...meta.toMap(), 'payloadId': payloadId};
+        final metaPacket = MeshPacket(
+          type: MeshPacketType.imageMetadata,
+          payload: metaMap,
+        );
+        final bytes = Uint8List.fromList(
+          utf8.encode(jsonEncode(metaPacket.toMap())),
+        );
+        await Nearby().sendBytesPayload(peer.endpointId, bytes);
+        debugPrint(
+          '[MESH] Sent image metadata (payloadId=$payloadId) to ${peer.endpointId}',
+        );
+      } catch (e) {
+        debugPrint('[MESH] Image send failed to ${peer.endpointId}: $e');
+      }
+    }
   }
 
   /// Edit a local message and propagate the change to all connected peers
