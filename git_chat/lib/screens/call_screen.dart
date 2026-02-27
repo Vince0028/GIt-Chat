@@ -134,7 +134,11 @@ class _CallScreenState extends State<CallScreen> {
                   ),
                   const SizedBox(height: 20),
                   Text(
-                    isConnected ? 'Connected' : 'Calling...',
+                    cs.state == CallState.connected
+                        ? 'Connected'
+                        : cs.state == CallState.connecting
+                        ? 'Setting up connection...'
+                        : 'Calling...',
                     style: GoogleFonts.firaCode(
                       color: AppTheme.textSecondary,
                       fontSize: 14,
