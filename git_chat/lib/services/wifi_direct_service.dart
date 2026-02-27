@@ -62,4 +62,28 @@ class WifiDirectService {
       debugPrint('[WIFID] removeGroup error: $e');
     }
   }
+
+  /// Bind the entire process to the Wi-Fi Direct (p2p0) network.
+  /// This forces WebRTC ICE to gather candidates on the p2p0 interface
+  /// instead of only loopback 127.0.0.1.
+  static Future<bool> bindToP2pNetwork() async {
+    try {
+      final result = await _channel.invokeMethod('bindToP2pNetwork');
+      debugPrint('[WIFID] bindToP2pNetwork: $result');
+      return result == true;
+    } catch (e) {
+      debugPrint('[WIFID] bindToP2pNetwork error: $e');
+      return false;
+    }
+  }
+
+  /// Unbind the process from the p2p network (restore default routing)
+  static Future<void> unbindNetwork() async {
+    try {
+      await _channel.invokeMethod('unbindNetwork');
+      debugPrint('[WIFID] Network unbound');
+    } catch (e) {
+      debugPrint('[WIFID] unbindNetwork error: $e');
+    }
+  }
 }

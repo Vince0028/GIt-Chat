@@ -4,6 +4,10 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.net.ConnectivityManager
+import android.net.LinkProperties
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.net.wifi.p2p.WifiP2pConfig
 import android.net.wifi.p2p.WifiP2pInfo
 import android.net.wifi.p2p.WifiP2pManager
@@ -14,6 +18,7 @@ import android.util.Log
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import java.net.Inet4Address
 
 class MainActivity : FlutterActivity() {
     private val CHANNEL = "com.gitchat/wifi_direct"
@@ -36,6 +41,8 @@ class MainActivity : FlutterActivity() {
                 "removeGroup" -> removeGroup(result)
                 "getConnectionInfo" -> getConnectionInfo(result)
                 "discoverAndConnect" -> discoverAndConnect(result)
+                "bindToP2pNetwork" -> bindToP2pNetwork(result)
+                "unbindNetwork" -> unbindNetwork(result)
                 else -> result.notImplemented()
             }
         }
@@ -111,43 +118,8 @@ class MainActivity : FlutterActivity() {
         mgr.discoverPeers(ch, object : WifiP2pManager.ActionListener {
             override fun onSuccess() {
                 Log.d(TAG, "Discovery started, waiting for peers...")
-                // Wait for discovery to find peers
-                Handler(Looper.getMainLooper()).postDelayed({
-                    mgr.requestPeers(ch) { peers ->
-                        val deviceList = peers.deviceList.toList()
-                        Log.d(TAG, "Found ${deviceList.size} peers")
-
-                        if (deviceList.isEmpty()) {
-                            // No peers found — maybe already connected via NC
-                            Log.d(TAG, "No peers via discovery, trying existing connection")
-                            getConnectionInfo(result)
-                            return@requestPeers
-                        }
-
-                        // Connect to the first available peer
-                        val device = deviceList[0]
-                        Log.d(TAG, "Connecting to: ${device.deviceName} (${device.deviceAddress})")
-                        val config = WifiP2pConfig().apply {
-                            deviceAddress = device.deviceAddress
-                        }
-
-                        mgr.connect(ch, config, object : WifiP2pManager.ActionListener {
-                            override fun onSuccess() {
-                                Log.d(TAG, "Connect initiated, waiting for group...")
-                                // Wait for the connection to fully establish
-                                Handler(Looper.getMainLooper()).postDelayed({
-                                    getConnectionInfo(result)
-                                }, 2000)
-                            }
-
-                            override fun onFailure(reason: Int) {
-                                Log.e(TAG, "Connect failed: $reason, trying existing connection")
-                                // Might already be connected
-                                getConnectionInfo(result)
-                            }
-                        })
-                    }
-                }, 3000) // Wait 3s for peer discovery
+                // Try multiple times with increasing delays (discovery can be slow)
+                attemptFindAndConnect(mgr, ch, result, attempt = 1, maxAttempts = 5)
             }
 
             override fun onFailure(reason: Int) {
@@ -156,6 +128,58 @@ class MainActivity : FlutterActivity() {
                 getConnectionInfo(result)
             }
         })
+    }
+
+    /** Retry peer discovery and connection up to maxAttempts times */
+    private fun attemptFindAndConnect(
+        mgr: WifiP2pManager,
+        ch: WifiP2pManager.Channel,
+        result: MethodChannel.Result,
+        attempt: Int,
+        maxAttempts: Int
+    ) {
+        // Increasing delay: 3s, 5s, 7s, 9s, 11s
+        val delayMs = (1000 + attempt * 2000).toLong()
+        Log.d(TAG, "Attempt $attempt/$maxAttempts — waiting ${delayMs}ms for peers...")
+        
+        Handler(Looper.getMainLooper()).postDelayed({
+            mgr.requestPeers(ch) { peers ->
+                val deviceList = peers.deviceList.toList()
+                Log.d(TAG, "Attempt $attempt: found ${deviceList.size} peers")
+
+                if (deviceList.isEmpty()) {
+                    if (attempt < maxAttempts) {
+                        // Retry — discovery might take longer
+                        attemptFindAndConnect(mgr, ch, result, attempt + 1, maxAttempts)
+                    } else {
+                        Log.d(TAG, "No peers after $maxAttempts attempts, trying existing connection")
+                        getConnectionInfo(result)
+                    }
+                    return@requestPeers
+                }
+
+                // Connect to the first available peer (the group owner)
+                val device = deviceList[0]
+                Log.d(TAG, "Connecting to: ${device.deviceName} (${device.deviceAddress})")
+                val config = WifiP2pConfig().apply {
+                    deviceAddress = device.deviceAddress
+                }
+
+                mgr.connect(ch, config, object : WifiP2pManager.ActionListener {
+                    override fun onSuccess() {
+                        Log.d(TAG, "Connect initiated, waiting for group...")
+                        Handler(Looper.getMainLooper()).postDelayed({
+                            getConnectionInfo(result)
+                        }, 2000)
+                    }
+
+                    override fun onFailure(reason: Int) {
+                        Log.e(TAG, "Connect failed: $reason, trying existing connection")
+                        getConnectionInfo(result)
+                    }
+                })
+            }
+        }, delayMs)
     }
 
     /** Get Wi-Fi Direct connection info (IPs) */
@@ -214,7 +238,78 @@ class MainActivity : FlutterActivity() {
         })
     }
 
+    /**
+     * Bind the entire process to the Wi-Fi Direct (p2p0) network.
+     * This forces WebRTC (and all new sockets) to use the p2p0 interface
+     * instead of loopback. Without this, ICE only gathers 127.0.0.1 candidates.
+     */
+    private fun bindToP2pNetwork(result: MethodChannel.Result) {
+        try {
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val allNetworks = cm.allNetworks
+            Log.d(TAG, "Looking for p2p network among ${allNetworks.size} networks...")
+
+            var p2pNetwork: Network? = null
+            for (network in allNetworks) {
+                val lp: LinkProperties? = cm.getLinkProperties(network)
+                val caps: NetworkCapabilities? = cm.getNetworkCapabilities(network)
+                val ifaceName = lp?.interfaceName ?: "unknown"
+                Log.d(TAG, "Network: iface=$ifaceName caps=$caps")
+
+                // Match p2p interface or 192.168.49.x address
+                if (ifaceName.contains("p2p")) {
+                    p2pNetwork = network
+                    Log.d(TAG, "Found p2p network on interface $ifaceName")
+                    break
+                }
+                // Also check link addresses for 192.168.49.x
+                lp?.linkAddresses?.forEach { la ->
+                    val addr = la.address
+                    if (addr is Inet4Address && addr.hostAddress?.startsWith("192.168.49") == true) {
+                        p2pNetwork = network
+                        Log.d(TAG, "Found p2p network via IP ${addr.hostAddress} on $ifaceName")
+                    }
+                }
+                if (p2pNetwork != null) break
+            }
+
+            if (p2pNetwork != null) {
+                val bound = cm.bindProcessToNetwork(p2pNetwork)
+                Log.d(TAG, "bindProcessToNetwork: $bound")
+                result.success(bound)
+            } else {
+                Log.w(TAG, "No p2p network found — listing all interfaces for debug")
+                for (network in allNetworks) {
+                    val lp = cm.getLinkProperties(network)
+                    Log.d(TAG, "  iface=${lp?.interfaceName} addrs=${lp?.linkAddresses}")
+                }
+                result.success(false)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "bindToP2pNetwork error: ${e.message}")
+            result.success(false)
+        }
+    }
+
+    /** Unbind the process from any specific network (restore default routing) */
+    private fun unbindNetwork(result: MethodChannel.Result) {
+        try {
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            cm.bindProcessToNetwork(null)
+            Log.d(TAG, "Process unbound from p2p network")
+            result.success(true)
+        } catch (e: Exception) {
+            Log.e(TAG, "unbindNetwork error: ${e.message}")
+            result.success(false)
+        }
+    }
+
     override fun onDestroy() {
+        try {
+            // Ensure we unbind on destroy
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            cm.bindProcessToNetwork(null)
+        } catch (_: Exception) {}
         try {
             receiver?.let { unregisterReceiver(it) }
         } catch (_: Exception) {}

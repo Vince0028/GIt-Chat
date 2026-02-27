@@ -156,11 +156,13 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
             ),
             onPressed: () {
               Navigator.pop(ctx);
-              cs.answerCall();
+              // Open call screen FIRST so debug log is visible
               Navigator.push(
                 context,
                 MaterialPageRoute(builder: (_) => CallScreen(callService: cs)),
               );
+              // THEN start answering (async — debug log shows progress)
+              cs.answerCall();
             },
           ),
         ],
@@ -806,13 +808,14 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           onPressed: _callService == null
               ? null
               : () {
-                  _callService!.startCall(video: false);
                   Navigator.push(
                     context,
                     MaterialPageRoute(
                       builder: (_) => CallScreen(callService: _callService!),
                     ),
                   );
+                  // Start call AFTER navigating so debug log is visible
+                  _callService!.startCall(video: false);
                 },
         ),
         // Video call button
@@ -826,13 +829,14 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           onPressed: _callService == null
               ? null
               : () {
-                  _callService!.startCall(video: true);
                   Navigator.push(
                     context,
                     MaterialPageRoute(
                       builder: (_) => CallScreen(callService: _callService!),
                     ),
                   );
+                  // Start call AFTER navigating so debug log is visible
+                  _callService!.startCall(video: true);
                 },
         ),
         if (widget.isGroupChat)

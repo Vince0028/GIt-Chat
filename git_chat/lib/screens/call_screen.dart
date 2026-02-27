@@ -20,6 +20,7 @@ class _CallScreenState extends State<CallScreen> {
   final RTCVideoRenderer _remoteRenderer = RTCVideoRenderer();
   Timer? _durationTimer;
   Duration _duration = Duration.zero;
+  bool _showDebug = true; // Show debug log by default until call connects
 
   @override
   void initState() {
@@ -40,6 +41,12 @@ class _CallScreenState extends State<CallScreen> {
     _updateStreams();
     setState(() {});
 
+    // Auto-hide debug log once connected
+    if (widget.callService.state == CallState.connected &&
+        widget.callService.remoteStream != null) {
+      _showDebug = false;
+    }
+
     // Start duration timer when connected
     if (widget.callService.state == CallState.connected &&
         _durationTimer == null) {
@@ -55,6 +62,17 @@ class _CallScreenState extends State<CallScreen> {
     // End — pop back
     if (widget.callService.state == CallState.idle) {
       _durationTimer?.cancel();
+      // Show error if there was one before popping
+      final err = widget.callService.errorMessage;
+      if (err != null && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(err, style: GoogleFonts.firaCode(fontSize: 12)),
+            backgroundColor: AppTheme.red,
+            duration: const Duration(seconds: 5),
+          ),
+        );
+      }
       if (mounted && Navigator.of(context).canPop()) {
         Navigator.of(context).pop();
       }
@@ -108,13 +126,12 @@ class _CallScreenState extends State<CallScreen> {
               ),
             ),
 
-          // Audio call center content
+          // Center content (avatar + status) — shown when no remote video
           if (!isVideo || cs.remoteStream == null)
             Center(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // Peer avatar
                   Container(
                     width: 100,
                     height: 100,
@@ -137,8 +154,10 @@ class _CallScreenState extends State<CallScreen> {
                     cs.state == CallState.connected
                         ? 'Connected'
                         : cs.state == CallState.connecting
-                        ? 'Setting up connection...'
-                        : 'Calling...',
+                            ? 'Setting up connection...'
+                            : cs.state == CallState.offering
+                                ? 'Calling...'
+                                : 'Initializing...',
                     style: GoogleFonts.firaCode(
                       color: AppTheme.textSecondary,
                       fontSize: 14,
@@ -166,12 +185,126 @@ class _CallScreenState extends State<CallScreen> {
                       ),
                     ),
                   ],
+                  // Peer count indicator
+                  const SizedBox(height: 12),
+                  Text(
+                    'Mesh peers: ${cs.connectedPeerCount}',
+                    style: GoogleFonts.firaCode(
+                      color: cs.connectedPeerCount > 0
+                          ? AppTheme.green
+                          : AppTheme.red,
+                      fontSize: 11,
+                    ),
+                  ),
+                  // Error message
+                  if (cs.errorMessage != null) ...[
+                    const SizedBox(height: 12),
+                    Container(
+                      margin: const EdgeInsets.symmetric(horizontal: 32),
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: AppTheme.red.withValues(alpha: 0.15),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: AppTheme.red.withValues(alpha: 0.4),
+                        ),
+                      ),
+                      child: Text(
+                        cs.errorMessage!,
+                        textAlign: TextAlign.center,
+                        style: GoogleFonts.firaCode(
+                          color: AppTheme.red,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),
 
+          // Debug log panel — tap the status badge to toggle
+          if (_showDebug)
+            Positioned(
+              top: MediaQuery.of(context).padding.top + 50,
+              left: 8,
+              right: 8,
+              bottom: 200,
+              child: Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.85),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: AppTheme.cyan.withValues(alpha: 0.3),
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(Icons.bug_report,
+                            color: AppTheme.cyan, size: 14),
+                        const SizedBox(width: 6),
+                        Text(
+                          'Call Debug Log',
+                          style: GoogleFonts.firaCode(
+                            color: AppTheme.cyan,
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const Spacer(),
+                        GestureDetector(
+                          onTap: () => setState(() => _showDebug = false),
+                          child: const Icon(Icons.close,
+                              color: AppTheme.textSecondary, size: 16),
+                        ),
+                      ],
+                    ),
+                    const Divider(
+                      color: AppTheme.textSecondary,
+                      height: 12,
+                    ),
+                    Expanded(
+                      child: ListView.builder(
+                        itemCount: cs.statusLog.length,
+                        reverse: true,
+                        itemBuilder: (_, i) {
+                          final line =
+                              cs.statusLog[cs.statusLog.length - 1 - i];
+                          final isError = line.startsWith('ERROR') ||
+                              line.contains('FAILED') ||
+                              line.contains('failed');
+                          final isSuccess = line.contains('CONNECTED') ||
+                              line.contains('OK') ||
+                              line.contains('sent');
+                          return Padding(
+                            padding:
+                                const EdgeInsets.symmetric(vertical: 1),
+                            child: Text(
+                              line,
+                              style: GoogleFonts.firaCode(
+                                color: isError
+                                    ? AppTheme.red
+                                    : isSuccess
+                                        ? AppTheme.green
+                                        : AppTheme.textSecondary,
+                                fontSize: 9,
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
           // Duration overlay for video call
-          if (isVideo && isConnected)
+          if (isVideo && isConnected && !_showDebug)
             Positioned(
               top: MediaQuery.of(context).padding.top + 16,
               left: 0,
@@ -199,7 +332,7 @@ class _CallScreenState extends State<CallScreen> {
             ),
 
           // Local video preview (corner)
-          if (isVideo && cs.localStream != null)
+          if (isVideo && cs.localStream != null && !_showDebug)
             Positioned(
               top: MediaQuery.of(context).padding.top + 60,
               right: 16,
@@ -234,36 +367,48 @@ class _CallScreenState extends State<CallScreen> {
               ),
             ),
 
-          // Call type indicator
+          // Call type indicator + debug toggle
           Positioned(
             top: MediaQuery.of(context).padding.top + 16,
             left: 16,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              decoration: BoxDecoration(
-                color: Colors.black54,
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    isVideo
-                        ? Icons.videocam_rounded
-                        : Icons.phone_in_talk_rounded,
-                    color: AppTheme.green,
-                    size: 16,
-                  ),
-                  const SizedBox(width: 6),
-                  Text(
-                    isVideo ? 'Video Call' : 'Audio Call',
-                    style: GoogleFonts.firaCode(
-                      color: AppTheme.textPrimary,
-                      fontSize: 11,
-                      fontWeight: FontWeight.bold,
+            child: GestureDetector(
+              onTap: () => setState(() => _showDebug = !_showDebug),
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                  color: Colors.black54,
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      isVideo
+                          ? Icons.videocam_rounded
+                          : Icons.phone_in_talk_rounded,
+                      color: AppTheme.green,
+                      size: 16,
                     ),
-                  ),
-                ],
+                    const SizedBox(width: 6),
+                    Text(
+                      isVideo ? 'Video Call' : 'Audio Call',
+                      style: GoogleFonts.firaCode(
+                        color: AppTheme.textPrimary,
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Icon(
+                      _showDebug
+                          ? Icons.bug_report
+                          : Icons.bug_report_outlined,
+                      color: AppTheme.textSecondary,
+                      size: 14,
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
@@ -293,7 +438,6 @@ class _CallScreenState extends State<CallScreen> {
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                 children: [
-                  // Mute
                   _buildControlBtn(
                     icon: cs.isMuted
                         ? Icons.mic_off_rounded
@@ -302,8 +446,6 @@ class _CallScreenState extends State<CallScreen> {
                     isActive: cs.isMuted,
                     onTap: cs.toggleMute,
                   ),
-
-                  // Speaker
                   _buildControlBtn(
                     icon: cs.isSpeaker
                         ? Icons.volume_up_rounded
@@ -312,8 +454,6 @@ class _CallScreenState extends State<CallScreen> {
                     isActive: cs.isSpeaker,
                     onTap: cs.toggleSpeaker,
                   ),
-
-                  // Video toggle (only in video call)
                   if (isVideo)
                     _buildControlBtn(
                       icon: cs.isCameraOff
@@ -323,16 +463,12 @@ class _CallScreenState extends State<CallScreen> {
                       isActive: !cs.isCameraOff,
                       onTap: cs.toggleCamera,
                     ),
-
-                  // Switch Camera (only in video call)
                   if (isVideo)
                     _buildControlBtn(
                       icon: Icons.cameraswitch_rounded,
                       label: 'Flip',
                       onTap: cs.switchCamera,
                     ),
-
-                  // End Call
                   _buildEndCallBtn(onTap: () => cs.endCall()),
                 ],
               ),
