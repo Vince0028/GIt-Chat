@@ -36,7 +36,11 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   String _username = '';
   StreamSubscription<ChatMessage>? _incomingSub;
 
-  void _showTopNotification(String message, {Color color = AppTheme.cyan, IconData icon = Icons.bluetooth}) {
+  void _showTopNotification(
+    String message, {
+    Color color = AppTheme.cyan,
+    IconData icon = Icons.bluetooth,
+  }) {
     final overlay = Overlay.of(context);
     late OverlayEntry entry;
     entry = OverlayEntry(
@@ -111,11 +115,266 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       groupId: widget.groupId,
     );
 
-    // broadcastLocalMessage saves + sends over mesh
     widget.meshController?.broadcastLocalMessage(message);
-
     _msgController.clear();
     _loadMessages();
+  }
+
+  // ── Edit / Delete ─────────────────────────────────────
+
+  void _onLongPressMessage(ChatMessage msg) {
+    if (msg.isDeleted) return; // Can't edit/delete already-deleted messages
+    HapticFeedback.mediumImpact();
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppTheme.bgCard,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) => Padding(
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 28),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Handle
+            Center(
+              child: Container(
+                width: 36,
+                height: 4,
+                margin: const EdgeInsets.only(bottom: 16),
+                decoration: BoxDecoration(
+                  color: AppTheme.border,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            Text(
+              '> message options',
+              style: GoogleFonts.firaCode(
+                color: AppTheme.textSecondary,
+                fontSize: 11,
+              ),
+            ),
+            const SizedBox(height: 12),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(
+                Icons.edit_outlined,
+                color: AppTheme.cyan,
+                size: 20,
+              ),
+              title: Text(
+                'Edit message',
+                style: GoogleFonts.firaCode(
+                  color: AppTheme.textPrimary,
+                  fontSize: 14,
+                ),
+              ),
+              onTap: () {
+                Navigator.pop(ctx);
+                _showEditSheet(msg);
+              },
+            ),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(
+                Icons.delete_outline,
+                color: AppTheme.red,
+                size: 20,
+              ),
+              title: Text(
+                'Delete message',
+                style: GoogleFonts.firaCode(color: AppTheme.red, fontSize: 14),
+              ),
+              onTap: () {
+                Navigator.pop(ctx);
+                _showDeleteConfirm(msg);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showEditSheet(ChatMessage msg) {
+    final editController = TextEditingController(text: msg.body);
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppTheme.bgCard,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) => Padding(
+        padding: EdgeInsets.only(
+          left: 20,
+          right: 20,
+          top: 16,
+          bottom: MediaQuery.of(ctx).viewInsets.bottom + 28,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                width: 36,
+                height: 4,
+                margin: const EdgeInsets.only(bottom: 16),
+                decoration: BoxDecoration(
+                  color: AppTheme.border,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            Text(
+              '> edit message',
+              style: GoogleFonts.firaCode(
+                color: AppTheme.textSecondary,
+                fontSize: 11,
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: editController,
+              autofocus: true,
+              maxLines: null,
+              style: GoogleFonts.firaCode(
+                color: AppTheme.textPrimary,
+                fontSize: 14,
+              ),
+              decoration: InputDecoration(
+                filled: true,
+                fillColor: AppTheme.bgDark,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: const BorderSide(color: AppTheme.border),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: const BorderSide(color: AppTheme.border),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: const BorderSide(color: AppTheme.cyan),
+                ),
+                hintText: 'edit your message...',
+                hintStyle: GoogleFonts.firaCode(
+                  color: AppTheme.textMuted,
+                  fontSize: 14,
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: Text(
+                    'CANCEL',
+                    style: GoogleFonts.firaCode(
+                      color: AppTheme.textMuted,
+                      fontSize: 12,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppTheme.cyan,
+                    foregroundColor: AppTheme.bgDark,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+                  onPressed: () async {
+                    final newBody = editController.text.trim();
+                    if (newBody.isEmpty || newBody == msg.body) {
+                      Navigator.pop(ctx);
+                      return;
+                    }
+                    Navigator.pop(ctx);
+                    await widget.meshController?.broadcastEdit(msg.id, newBody);
+                    _loadMessages();
+                  },
+                  child: Text(
+                    'SAVE',
+                    style: GoogleFonts.firaCode(
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showDeleteConfirm(ChatMessage msg) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.bgCard,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: const BorderSide(color: AppTheme.border),
+        ),
+        title: Text(
+          'Delete message?',
+          style: GoogleFonts.firaCode(
+            color: AppTheme.textPrimary,
+            fontSize: 15,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        content: Text(
+          'This will remove the message for you and all connected peers.',
+          style: GoogleFonts.firaCode(
+            color: AppTheme.textSecondary,
+            fontSize: 12,
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text(
+              'CANCEL',
+              style: GoogleFonts.firaCode(
+                color: AppTheme.textMuted,
+                fontSize: 12,
+              ),
+            ),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.red,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+            ),
+            onPressed: () async {
+              Navigator.pop(ctx);
+              await widget.meshController?.broadcastDelete(msg.id);
+              _loadMessages();
+            },
+            child: Text(
+              'DELETE',
+              style: GoogleFonts.firaCode(
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -185,8 +444,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
             child: Text(
               widget.isGroupChat ? 'GROUP' : 'GLOBAL',
               style: GoogleFonts.firaCode(
-                color:
-                    widget.isGroupChat ? AppTheme.purple : AppTheme.green,
+                color: widget.isGroupChat ? AppTheme.purple : AppTheme.green,
                 fontSize: 9,
                 fontWeight: FontWeight.bold,
               ),
@@ -359,69 +617,117 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   }
 
   Widget _buildMessageBubble(ChatMessage msg, bool isMe, bool showHeader) {
-    return Align(
-      alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
-      child: Container(
-        constraints: BoxConstraints(
-          maxWidth: MediaQuery.of(context).size.width * 0.75,
-        ),
-        child: Column(
-          crossAxisAlignment: isMe
-              ? CrossAxisAlignment.end
-              : CrossAxisAlignment.start,
-          children: [
-            if (showHeader)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 4),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      isMe ? 'you' : '@${msg.from}',
-                      style: GoogleFonts.firaCode(
-                        color: isMe ? AppTheme.green : AppTheme.cyan,
-                        fontSize: 11,
-                        fontWeight: FontWeight.bold,
+    final isDeleted = msg.isDeleted;
+    final isEdited = msg.isEdited && !isDeleted;
+
+    return GestureDetector(
+      onLongPress: isMe ? () => _onLongPressMessage(msg) : null,
+      child: Align(
+        alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
+        child: Container(
+          constraints: BoxConstraints(
+            maxWidth: MediaQuery.of(context).size.width * 0.75,
+          ),
+          child: Column(
+            crossAxisAlignment: isMe
+                ? CrossAxisAlignment.end
+                : CrossAxisAlignment.start,
+            children: [
+              if (showHeader)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 4),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        isMe ? 'you' : '@${msg.from}',
+                        style: GoogleFonts.firaCode(
+                          color: isMe ? AppTheme.green : AppTheme.cyan,
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      _formatTime(msg.timestamp),
-                      style: GoogleFonts.firaCode(
-                        color: AppTheme.textMuted,
-                        fontSize: 10,
+                      const SizedBox(width: 8),
+                      Text(
+                        _formatTime(msg.timestamp),
+                        style: GoogleFonts.firaCode(
+                          color: AppTheme.textMuted,
+                          fontSize: 10,
+                        ),
                       ),
-                    ),
-                    if (msg.isRelayed) ...[
-                      const SizedBox(width: 6),
-                      Icon(Icons.repeat, size: 10, color: AppTheme.orange),
+                      if (isEdited) ...[
+                        const SizedBox(width: 6),
+                        Text(
+                          '(edited)',
+                          style: GoogleFonts.firaCode(
+                            color: AppTheme.textMuted,
+                            fontSize: 9,
+                            fontStyle: FontStyle.italic,
+                          ),
+                        ),
+                      ],
+                      if (msg.isRelayed) ...[
+                        const SizedBox(width: 6),
+                        const Icon(
+                          Icons.repeat,
+                          size: 10,
+                          color: AppTheme.orange,
+                        ),
+                      ],
                     ],
-                  ],
+                  ),
                 ),
-              ),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-              decoration: BoxDecoration(
-                color: isMe
-                    ? AppTheme.green.withValues(alpha: 0.12)
-                    : AppTheme.bgCard,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(
-                  color: isMe
-                      ? AppTheme.green.withValues(alpha: 0.3)
-                      : AppTheme.border,
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 10,
                 ),
-              ),
-              child: Text(
-                msg.body,
-                style: GoogleFonts.firaCode(
-                  color: AppTheme.textPrimary,
-                  fontSize: 13,
-                  height: 1.4,
+                decoration: BoxDecoration(
+                  color: isDeleted
+                      ? AppTheme.bgCard
+                      : isMe
+                      ? AppTheme.green.withValues(alpha: 0.12)
+                      : AppTheme.bgCard,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: isDeleted
+                        ? AppTheme.border.withValues(alpha: 0.4)
+                        : isMe
+                        ? AppTheme.green.withValues(alpha: 0.3)
+                        : AppTheme.border,
+                  ),
                 ),
+                child: isDeleted
+                    ? Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(
+                            Icons.delete_outline,
+                            size: 13,
+                            color: AppTheme.textMuted,
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            'Message deleted',
+                            style: GoogleFonts.firaCode(
+                              color: AppTheme.textMuted,
+                              fontSize: 12,
+                              fontStyle: FontStyle.italic,
+                            ),
+                          ),
+                        ],
+                      )
+                    : Text(
+                        msg.body,
+                        style: GoogleFonts.firaCode(
+                          color: AppTheme.textPrimary,
+                          fontSize: 13,
+                          height: 1.4,
+                        ),
+                      ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );

@@ -14,7 +14,7 @@ class ChatMessage extends HiveObject {
   final String to;
 
   @HiveField(3)
-  final String body;
+  String body; // mutable for in-place editing
 
   @HiveField(4)
   final DateTime timestamp;
@@ -28,6 +28,12 @@ class ChatMessage extends HiveObject {
   @HiveField(7)
   final bool isRelayed;
 
+  @HiveField(8)
+  bool isEdited;
+
+  @HiveField(9)
+  bool isDeleted;
+
   ChatMessage({
     required this.id,
     required this.from,
@@ -37,9 +43,11 @@ class ChatMessage extends HiveObject {
     this.ttl = 3,
     this.groupId,
     this.isRelayed = false,
+    this.isEdited = false,
+    this.isDeleted = false,
   });
 
-  /// Convert to a Map for BLE transmission
+  /// Convert to a Map for mesh transmission
   Map<String, dynamic> toMap() {
     return {
       'id': id,
@@ -50,10 +58,12 @@ class ChatMessage extends HiveObject {
       'ttl': ttl,
       'groupId': groupId,
       'isRelayed': isRelayed,
+      'isEdited': isEdited,
+      'isDeleted': isDeleted,
     };
   }
 
-  /// Create from a Map received over BLE
+  /// Create from a Map received over mesh
   factory ChatMessage.fromMap(Map<String, dynamic> map) {
     return ChatMessage(
       id: map['id'] as String,
@@ -64,6 +74,8 @@ class ChatMessage extends HiveObject {
       ttl: map['ttl'] as int? ?? 3,
       groupId: map['groupId'] as String?,
       isRelayed: map['isRelayed'] as bool? ?? false,
+      isEdited: map['isEdited'] as bool? ?? false,
+      isDeleted: map['isDeleted'] as bool? ?? false,
     );
   }
 }

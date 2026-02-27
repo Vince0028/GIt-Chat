@@ -23,7 +23,13 @@ class MeshPeer {
 }
 
 /// Packet types for the mesh protocol
-enum MeshPacketType { message, groupInvite, groupJoinAck }
+enum MeshPacketType {
+  message,
+  groupInvite,
+  groupJoinAck,
+  messageEdit,
+  messageDelete,
+}
 
 /// A wrapper for all data sent over the mesh
 class MeshPacket {
@@ -241,6 +247,12 @@ class MeshController extends ChangeNotifier {
           case MeshPacketType.groupJoinAck:
             _handleGroupJoinAck(packet.payload, sourceId);
             break;
+          case MeshPacketType.messageEdit:
+            _handleIncomingEdit(packet.payload);
+            break;
+          case MeshPacketType.messageDelete:
+            _handleIncomingDelete(packet.payload);
+            break;
         }
       } else {
         // Legacy: raw ChatMessage
@@ -340,6 +352,47 @@ class MeshController extends ChangeNotifier {
     await _sendPacketToPeers(
       MeshPacket(type: MeshPacketType.message, payload: message.toMap()),
     );
+  }
+
+  /// Edit a local message and propagate the change to all connected peers
+  Future<void> broadcastEdit(String messageId, String newBody) async {
+    await StorageService.editMessage(messageId, newBody);
+    await _sendPacketToPeers(
+      MeshPacket(
+        type: MeshPacketType.messageEdit,
+        payload: {'id': messageId, 'body': newBody},
+      ),
+    );
+    notifyListeners();
+  }
+
+  /// Delete a local message and propagate the deletion to all connected peers
+  Future<void> broadcastDelete(String messageId) async {
+    await StorageService.deleteMessage(messageId);
+    await _sendPacketToPeers(
+      MeshPacket(
+        type: MeshPacketType.messageDelete,
+        payload: {'id': messageId},
+      ),
+    );
+    notifyListeners();
+  }
+
+  void _handleIncomingEdit(Map<String, dynamic> data) {
+    final id = data['id'] as String?;
+    final body = data['body'] as String?;
+    if (id != null && body != null) {
+      StorageService.editMessage(id, body);
+      notifyListeners();
+    }
+  }
+
+  void _handleIncomingDelete(Map<String, dynamic> data) {
+    final id = data['id'] as String?;
+    if (id != null) {
+      StorageService.deleteMessage(id);
+      notifyListeners();
+    }
   }
 
   /// Send a group invite to all connected peers

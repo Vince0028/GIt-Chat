@@ -48,14 +48,29 @@ class StorageService {
     await box.put(message.id, message);
   }
 
+  static Future<void> editMessage(String id, String newBody) async {
+    final box = Hive.box<ChatMessage>(_messagesBox);
+    final msg = box.get(id);
+    if (msg == null) return;
+    msg.body = newBody;
+    msg.isEdited = true;
+    await msg.save();
+  }
+
+  static Future<void> deleteMessage(String id) async {
+    final box = Hive.box<ChatMessage>(_messagesBox);
+    final msg = box.get(id);
+    if (msg == null) return;
+    msg.isDeleted = true;
+    await msg.save();
+  }
+
   static List<ChatMessage> getMessages({String? peerId, String? groupId}) {
     final box = Hive.box<ChatMessage>(_messagesBox);
     final all = box.values.toList();
 
     if (groupId != null) {
-      return all
-          .where((m) => m.groupId == groupId)
-          .toList()
+      return all.where((m) => m.groupId == groupId).toList()
         ..sort((a, b) => a.timestamp.compareTo(b.timestamp));
     }
 
@@ -72,9 +87,7 @@ class StorageService {
     }
 
     // Return only broadcast (non-group) messages
-    return all
-        .where((m) => m.groupId == null || m.groupId!.isEmpty)
-        .toList()
+    return all.where((m) => m.groupId == null || m.groupId!.isEmpty).toList()
       ..sort((a, b) => a.timestamp.compareTo(b.timestamp));
   }
 
