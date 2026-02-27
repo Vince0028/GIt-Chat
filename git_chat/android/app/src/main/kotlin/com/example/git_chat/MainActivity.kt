@@ -27,7 +27,6 @@ class MainActivity : FlutterActivity() {
     private var manager: WifiP2pManager? = null
     private var channel: WifiP2pManager.Channel? = null
     private var receiver: BroadcastReceiver? = null
-    private var weCreatedGroup = false
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -77,10 +76,30 @@ class MainActivity : FlutterActivity() {
             return
         }
 
+        // Always remove any existing group first (clean slate)
+        Log.d(TAG, "Removing any existing group before creating new one...")
+        mgr.removeGroup(ch, object : WifiP2pManager.ActionListener {
+            override fun onSuccess() {
+                Log.d(TAG, "Old group removed, creating new group after delay...")
+                Handler(Looper.getMainLooper()).postDelayed({
+                    actuallyCreateGroup(mgr, ch, result)
+                }, 800)
+            }
+            override fun onFailure(reason: Int) {
+                Log.d(TAG, "No old group to remove ($reason), creating new group...")
+                actuallyCreateGroup(mgr, ch, result)
+            }
+        })
+    }
+
+    private fun actuallyCreateGroup(
+        mgr: WifiP2pManager,
+        ch: WifiP2pManager.Channel,
+        result: MethodChannel.Result
+    ) {
         mgr.createGroup(ch, object : WifiP2pManager.ActionListener {
             override fun onSuccess() {
                 Log.d(TAG, "Group created — owner at 192.168.49.1")
-                weCreatedGroup = true
                 // Give the group a moment to fully form
                 Handler(Looper.getMainLooper()).postDelayed({
                     getConnectionInfo(result)
@@ -217,23 +236,17 @@ class MainActivity : FlutterActivity() {
             return
         }
 
-        // Only remove if we created it
-        if (!weCreatedGroup) {
-            result.success(true)
-            return
-        }
-
+        // Always try to remove — don't guard with weCreatedGroup
+        // because stale groups from previous calls can block new ones
         mgr.removeGroup(ch, object : WifiP2pManager.ActionListener {
             override fun onSuccess() {
                 Log.d(TAG, "Group removed")
-                weCreatedGroup = false
                 result.success(true)
             }
 
             override fun onFailure(reason: Int) {
-                Log.e(TAG, "removeGroup failed: $reason")
-                weCreatedGroup = false
-                result.success(false)
+                Log.e(TAG, "removeGroup failed: $reason (may not have been a group)")
+                result.success(true) // Not an error — no group to remove
             }
         })
     }

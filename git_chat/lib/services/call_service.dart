@@ -25,6 +25,21 @@ class CallService extends ChangeNotifier {
   static const int _signalingPort = 29876;
   static const String _groupOwnerIp = '192.168.49.1';
 
+  // ── UDP Relay ──────────────────────────────────────────
+  // WebRTC only sees 127.0.0.1 because p2p0 isn't in Android's
+  // ConnectivityManager. We run a UDP relay on 0.0.0.0:_relayPort
+  // that bridges loopback ↔ p2p0 transparently.
+  //
+  // WebRTC thinks remote is at 127.0.0.1:_relayPort (loopback).
+  // Relay forwards those packets to the real remote p2p0 IP.
+  // Incoming packets from p2p0 are forwarded to WebRTC on loopback.
+  static const int _relayPort = 59876;
+  RawDatagramSocket? _relaySocket;
+  String? _remoteP2pIp;
+  int? _webrtcLocalPort; // learned from first loopback packet
+  final List<Datagram> _relayBuffer = [];
+  bool _relaySentSyntheticCandidate = false;
+
   // State
   CallState _state = CallState.idle;
   bool _isVideoCall = false;
@@ -39,6 +54,9 @@ class CallService extends ChangeNotifier {
   final List<RTCIceCandidate> _pendingCandidates = [];
   bool _remoteDescSet = false;
 
+  // Local p2p0 IP (detected after Wi-Fi Direct forms)
+  String? _localP2pIp;
+
   // ── Visible status log (shown on call screen) ──────────
   final List<String> statusLog = [];
   String? errorMessage;
@@ -46,7 +64,7 @@ class CallService extends ChangeNotifier {
   void _log(String msg) {
     debugPrint('[CALL] $msg');
     statusLog.add(msg);
-    if (statusLog.length > 60) statusLog.removeAt(0);
+    if (statusLog.length > 80) statusLog.removeAt(0);
     notifyListeners();
   }
 
@@ -76,29 +94,31 @@ class CallService extends ChangeNotifier {
   }
 
   // ── WebRTC Configuration ───────────────────────────────
+  // No STUN — we're offline. UDP relay handles the bridging.
   static const Map<String, dynamic> _rtcConfig = {
-    'iceServers': [
-      {'urls': 'stun:stun.l.google.com:19302'},
-    ],
+    'iceServers': [],
     'sdpSemantics': 'unified-plan',
-    'iceCandidatePoolSize': 2,
+    'iceCandidatePoolSize': 0,
   };
 
   // ══════════════════════════════════════════════════════════
-  //  TWO-PHASE OFFLINE CALL FLOW
+  //  THREE-PHASE OFFLINE CALL FLOW
   //
   //  Phase 1 (NC mesh / Bluetooth):
-  //    Caller → invite → Callee accepts → Caller → "ready" signal
+  //    Call invite → accept → "ready" signal
   //
   //  Phase 2 (Wi-Fi Direct + TCP):
-  //    BOTH sides stop mesh (releases Wi-Fi Direct adapter!)
-  //    Caller: creates WFD group → starts TCP server
-  //    Callee: discovers WFD group → connects TCP
-  //    WebRTC signaling over TCP, media over WFD p2p0 interface
+  //    Stop mesh → WFD group → TCP signaling → exchange p2p IPs
   //
-  //  Key insight: NC holds the Wi-Fi Direct adapter exclusively.
-  //  We MUST stop mesh before manual Wi-Fi Direct will work.
-  //  After call ends, mesh is restarted automatically.
+  //  Phase 3 (UDP Relay + WebRTC):
+  //    Start UDP relay (bridges loopback ↔ p2p0) → WebRTC with
+  //    synthetic ICE candidates pointing to 127.0.0.1:relay.
+  //    Relay transparently forwards packets to real p2p0 IPs.
+  //
+  //  Why relay? WebRTC's native lib only sees 127.0.0.1 because
+  //  p2p0 isn't registered in Android's ConnectivityManager.
+  //  The relay bridges between loopback (where WebRTC lives)
+  //  and the p2p0 interface (where the remote actually is).
   // ══════════════════════════════════════════════════════════
 
   // ── Start a Call (Caller) ─────────────────────────────
@@ -113,6 +133,7 @@ class CallService extends ChangeNotifier {
     _state = CallState.offering;
     _remoteDescSet = false;
     _pendingCandidates.clear();
+    _relaySentSyntheticCandidate = false;
     notifyListeners();
 
     // Pre-check: mesh peers
@@ -173,6 +194,7 @@ class CallService extends ChangeNotifier {
     _state = CallState.connecting;
     _remoteDescSet = false;
     _pendingCandidates.clear();
+    _relaySentSyntheticCandidate = false;
     notifyListeners();
 
     // Check permissions
@@ -193,67 +215,72 @@ class CallService extends ChangeNotifier {
       _log('Send accept warning: $e');
     }
     pendingOffer = null;
-    // Flow continues in _onSignal when 'iceCandidate' with ready:true arrives
   }
 
-  // ── Phase 2: Wi-Fi Direct setup ───────────────────────
+  // ── Phase 2: Wi-Fi Direct + TCP setup ─────────────────
 
-  /// Caller received acceptance → send ready signal → stop mesh → WFD group → TCP
+  /// Caller: send ready → stop mesh → WFD group → TCP → exchange IPs → relay → WebRTC
   Future<void> _callerStartPhase2() async {
     _state = CallState.connecting;
     notifyListeners();
 
     try {
-      // Send "ready" signal over mesh so callee knows to start
       _log('Sending ready signal over mesh...');
       await meshController.sendCallSignal(MeshPacketType.iceCandidate, {
         'ready': true,
       });
 
-      // Wait for the signal to be delivered over BT (~1-2s)
       _log('Waiting for signal delivery...');
       await Future.delayed(const Duration(seconds: 2));
 
-      // CRITICAL: Stop mesh to release the Wi-Fi Direct adapter
       _log('Stopping mesh (releasing Wi-Fi adapter)...');
       meshController.stopMesh();
       await Future.delayed(const Duration(seconds: 1));
 
-      // Create Wi-Fi Direct group (become Group Owner)
+      // Remove any stale group from a previous call
+      _log('Removing any stale Wi-Fi Direct group...');
+      try { await WifiDirectService.removeGroup(); } catch (_) {}
+      await Future.delayed(const Duration(milliseconds: 500));
+
       _log('Creating Wi-Fi Direct group...');
       final result = await WifiDirectService.createGroup();
       final groupFormed = result['groupFormed'] as bool? ?? false;
-      final goAddr = result['groupOwnerAddress'] as String? ?? _groupOwnerIp;
-      _log('WFD group: formed=$groupFormed addr=$goAddr');
+      _log('WFD group: formed=$groupFormed');
 
-      // Wait for p2p0 interface
       final gotIp = await _waitForP2pInterface();
       if (!gotIp) {
-        _log('No p2p0 (using 192.168.49.1 anyway)');
+        _localP2pIp = _groupOwnerIp;
+        _log('No p2p0 detected, using $_groupOwnerIp');
       }
 
-      // CRITICAL: Bind process to p2p0 network so WebRTC sees it
-      _log('Binding process to p2p network...');
-      final bound = await WifiDirectService.bindToP2pNetwork();
-      _log('Process bound to p2p: $bound');
-
-      // Start TCP signaling server
-      _log('Starting TCP server on port $_signalingPort...');
-      _tcpServer = await ServerSocket.bind(
-        InternetAddress.anyIPv4, _signalingPort);
+      // Bind TCP to the p2p0 IP so it's reachable on that interface
+      final bindAddr = _localP2pIp ?? _groupOwnerIp;
+      _log('Starting TCP server on $bindAddr:$_signalingPort...');
+      try {
+        _tcpServer = await ServerSocket.bind(
+          InternetAddress(bindAddr), _signalingPort);
+      } catch (e) {
+        _log('Bind to $bindAddr failed ($e), falling back to 0.0.0.0');
+        _tcpServer = await ServerSocket.bind(
+          InternetAddress.anyIPv4, _signalingPort);
+      }
       _log('TCP server listening — waiting for callee...');
 
-      // Wait for callee to connect (timeout 90s for slow discovery)
       final socket = await _tcpServer!.first.timeout(
         const Duration(seconds: 90),
-        onTimeout: () => throw TimeoutException(
-          'Callee never connected (90s timeout)'),
+        onTimeout: () => throw TimeoutException('Callee never connected'),
       );
       _tcpSocket = socket;
       _log('Callee connected via TCP!');
-
       _listenToTcpSocket(socket);
-      await _startWebRtcAsCaller();
+
+      // Exchange p2p IPs — send ours, wait for callee's
+      _log('Sending p2p IP to callee...');
+      _sendTcpSignal({
+        'signalType': 'p2pInfo',
+        'ip': _localP2pIp ?? _groupOwnerIp,
+      });
+      // WebRTC starts when we receive 'p2pInfo' from callee (in _handleTcpSignal)
     } catch (e) {
       errorMessage = 'Call setup failed: $e';
       _log('ERROR: $e');
@@ -261,20 +288,21 @@ class CallService extends ChangeNotifier {
     }
   }
 
-  /// Callee received ready signal → stop mesh → discover WFD → TCP → wait for offer
+  /// Callee: stop mesh → discover WFD → TCP → exchange IPs → relay → wait for offer
   Future<void> _calleeStartPhase2() async {
     try {
-      // Wait a moment for the caller to finish stopping mesh + creating group
       _log('Waiting for caller to set up group...');
       await Future.delayed(const Duration(seconds: 4));
 
-      // CRITICAL: Stop mesh to release the Wi-Fi Direct adapter
       _log('Stopping mesh (releasing Wi-Fi adapter)...');
       meshController.stopMesh();
       await Future.delayed(const Duration(seconds: 1));
 
-      // Try discovering and connecting to the caller's WFD group
-      // Retry multiple times — discovery can be slow
+      // Remove any stale group from a previous call
+      _log('Removing any stale Wi-Fi Direct group...');
+      try { await WifiDirectService.removeGroup(); } catch (_) {}
+      await Future.delayed(const Duration(milliseconds: 500));
+
       bool connected = false;
       for (int attempt = 1; attempt <= 3 && !connected; attempt++) {
         _log('Wi-Fi Direct discovery attempt $attempt/3...');
@@ -285,17 +313,14 @@ class CallService extends ChangeNotifier {
           connected = true;
           break;
         }
-        // Wait before retry
         if (attempt < 3) {
           _log('Retrying in 3s...');
           await Future.delayed(const Duration(seconds: 3));
         }
       }
 
-      // Even if discoverAndConnect said false, poll getConnectionInfo
-      // (connection may form asynchronously)
       if (!connected) {
-        _log('Discovery returned false — polling for connection...');
+        _log('Discovery returned false — polling...');
         for (int i = 0; i < 20; i++) {
           final info = await WifiDirectService.getConnectionInfo();
           if (info['groupFormed'] == true) {
@@ -307,42 +332,65 @@ class CallService extends ChangeNotifier {
         }
       }
 
-      // Wait for p2p0 interface
       final gotIp = await _waitForP2pInterface();
       if (!gotIp) {
         _log('WARNING: No p2p0 IP — trying TCP anyway...');
       }
 
-      // CRITICAL: Bind process to p2p0 network so WebRTC sees it
-      _log('Binding process to p2p network...');
-      final bound = await WifiDirectService.bindToP2pNetwork();
-      _log('Process bound to p2p: $bound');
+      // Verify we can actually reach the group owner
+      final verifyInfo = await WifiDirectService.getConnectionInfo();
+      _log('Pre-TCP verify: groupFormed=${verifyInfo['groupFormed']} '
+           'owner=${verifyInfo['isGroupOwner']} '
+           'addr=${verifyInfo['groupOwnerAddress']}');
 
-      // Connect TCP to group owner
-      _log('Connecting TCP to $_groupOwnerIp:$_signalingPort...');
+      // Source-bind TCP to our p2p0 IP — forces traffic through the correct interface
+      _log('Connecting TCP: ${_localP2pIp ?? "auto"} → $_groupOwnerIp:$_signalingPort');
       Socket? sock;
-      for (int attempt = 1; attempt <= 8; attempt++) {
+      for (int attempt = 1; attempt <= 10; attempt++) {
         try {
-          sock = await Socket.connect(
-            _groupOwnerIp, _signalingPort,
-            timeout: const Duration(seconds: 8),
-          );
+          if (_localP2pIp != null) {
+            // Bind to our p2p0 IP so the OS routes through the right interface
+            sock = await Socket.connect(
+              _groupOwnerIp, _signalingPort,
+              sourceAddress: InternetAddress(_localP2pIp!),
+              timeout: const Duration(seconds: 8),
+            );
+          } else {
+            sock = await Socket.connect(
+              _groupOwnerIp, _signalingPort,
+              timeout: const Duration(seconds: 8),
+            );
+          }
           break;
         } catch (e) {
-          _log('TCP attempt $attempt/8: $e');
-          if (attempt < 8) {
-            await Future.delayed(const Duration(seconds: 3));
+          _log('TCP attempt $attempt/10: $e');
+          // On attempt 5, re-check p2p IP (might have appeared late)
+          if (attempt == 5 && _localP2pIp == null) {
+            _log('Re-checking for p2p0 interface...');
+            await _waitForP2pInterface();
+            if (_localP2pIp != null) _log('Got late p2p IP: $_localP2pIp');
           }
+          if (attempt < 10) await Future.delayed(const Duration(seconds: 3));
         }
       }
       if (sock == null) {
-        throw Exception('Could not connect TCP to caller after 8 attempts');
+        throw Exception('TCP connect failed after 10 attempts');
       }
       _tcpSocket = sock;
       _log('TCP connected to caller!');
-
       _listenToTcpSocket(sock);
-      _log('Waiting for WebRTC offer...');
+
+      // Callee knows caller is always 192.168.49.1
+      // Start relay immediately + send our IP
+      _remoteP2pIp = _groupOwnerIp;
+      await _startRelay();
+      _log('Relay started (remote=$_remoteP2pIp)');
+
+      _sendTcpSignal({
+        'signalType': 'p2pInfo',
+        'ip': _localP2pIp ?? 'unknown',
+      });
+      _log('Sent p2p IP to caller. Waiting for offer...');
     } catch (e) {
       errorMessage = 'Connect failed: $e';
       _log('ERROR: $e');
@@ -350,7 +398,96 @@ class CallService extends ChangeNotifier {
     }
   }
 
-  /// Wait up to 15s for a p2p0 / Wi-Fi Direct interface with an IP
+  // ── Phase 3: UDP Relay ────────────────────────────────
+
+  /// Start the UDP relay that bridges loopback ↔ p2p0
+  Future<void> _startRelay() async {
+    _webrtcLocalPort = null;
+    _relayBuffer.clear();
+
+    _relaySocket = await RawDatagramSocket.bind(
+      InternetAddress.anyIPv4, _relayPort);
+    _log('UDP relay on 0.0.0.0:$_relayPort');
+
+    _relaySocket!.listen((event) {
+      if (event != RawSocketEvent.read) return;
+      final dg = _relaySocket?.receive();
+      if (dg == null) return;
+
+      if (dg.address.isLoopback) {
+        // From local WebRTC → forward to remote via p2p0
+        _webrtcLocalPort = dg.port;
+        if (_remoteP2pIp != null) {
+          _relaySocket?.send(
+            dg.data,
+            InternetAddress(_remoteP2pIp!),
+            _relayPort,
+          );
+        }
+        // Drain any buffered packets from remote
+        if (_relayBuffer.isNotEmpty) {
+          for (final b in _relayBuffer) {
+            _relaySocket?.send(
+              b.data,
+              InternetAddress.loopbackIPv4,
+              _webrtcLocalPort!,
+            );
+          }
+          _relayBuffer.clear();
+        }
+      } else {
+        // From remote via p2p0 → forward to local WebRTC on loopback
+        if (_webrtcLocalPort != null) {
+          _relaySocket?.send(
+            dg.data,
+            InternetAddress.loopbackIPv4,
+            _webrtcLocalPort!,
+          );
+        } else {
+          // Buffer until we learn WebRTC's port
+          if (_relayBuffer.length < 100) {
+            _relayBuffer.add(dg);
+          }
+        }
+      }
+    });
+  }
+
+  void _stopRelay() {
+    _relaySocket?.close();
+    _relaySocket = null;
+    _relayBuffer.clear();
+    _webrtcLocalPort = null;
+    _remoteP2pIp = null;
+  }
+
+  /// Send a synthetic ICE candidate pointing to our relay (127.0.0.1:_relayPort)
+  void _sendSyntheticCandidate() {
+    if (_relaySentSyntheticCandidate) return;
+    _relaySentSyntheticCandidate = true;
+
+    // High-priority host UDP candidate pointing to our local relay
+    const synth =
+        'candidate:relay 1 udp 2130706431 127.0.0.1 $_relayPort typ host generation 0';
+    _log('Sending synthetic relay candidate');
+    _sendTcpSignal({
+      'signalType': 'iceCandidate',
+      'candidate': synth,
+      'sdpMid': '0',
+      'sdpMLineIndex': 0,
+    });
+  }
+
+  /// Strip all a=candidate lines from SDP (we use synthetic trickle candidates only)
+  String _stripCandidatesFromSdp(String sdp) {
+    final lines = sdp.split('\n');
+    final filtered =
+        lines.where((l) => !l.trimLeft().startsWith('a=candidate:')).toList();
+    return filtered.join('\n');
+  }
+
+  // ── p2p0 interface detection ──────────────────────────
+
   Future<bool> _waitForP2pInterface() async {
     _log('Waiting for p2p0 interface...');
     for (int i = 0; i < 30; i++) {
@@ -363,8 +500,9 @@ class CallService extends ChangeNotifier {
           for (final addr in iface.addresses) {
             if (!addr.isLoopback &&
                 (iface.name.contains('p2p') ||
-                 addr.address.startsWith('192.168.49'))) {
-              _log('Got IP: ${addr.address} (${iface.name})');
+                    addr.address.startsWith('192.168.49'))) {
+              _localP2pIp = addr.address;
+              _log('Got IP: $_localP2pIp (${iface.name})');
               return true;
             }
           }
@@ -372,10 +510,9 @@ class CallService extends ChangeNotifier {
       } catch (_) {}
       await Future.delayed(const Duration(milliseconds: 500));
     }
-    // Dump all interfaces for debug
     try {
       final all = await NetworkInterface.list(
-        type: InternetAddressType.IPv4, includeLinkLocal: true);
+          type: InternetAddressType.IPv4, includeLinkLocal: true);
       for (final iface in all) {
         for (final addr in iface.addresses) {
           _log('IF: ${addr.address} (${iface.name})');
@@ -432,6 +569,19 @@ class CallService extends ChangeNotifier {
     final type = signal['signalType'] as String?;
     _log('TCP: $type');
     switch (type) {
+      case 'p2pInfo':
+        // Remote sent their p2p0 IP
+        final remoteIp = signal['ip'] as String?;
+        _log('Remote p2p IP: $remoteIp');
+        if (_isCaller && remoteIp != null && remoteIp != 'unknown') {
+          // Caller now knows callee's IP → start relay → start WebRTC
+          _remoteP2pIp = remoteIp;
+          await _startRelay();
+          _log('Relay started (remote=$_remoteP2pIp)');
+          await _startWebRtcAsCaller();
+        }
+        // Callee: already started relay in _calleeStartPhase2
+        break;
       case 'offer':
         await _handleRemoteOffer(signal);
         break;
@@ -471,13 +621,18 @@ class CallService extends ChangeNotifier {
     });
     await _pc!.setLocalDescription(offer);
 
+    // Strip real candidate lines — we use synthetic relay candidates
+    final cleanSdp = _stripCandidatesFromSdp(offer.sdp ?? '');
     _sendTcpSignal({
       'signalType': 'offer',
-      'sdp': offer.sdp,
+      'sdp': cleanSdp,
       'type': offer.type,
       'video': _isVideoCall,
     });
     _log('Offer sent via TCP!');
+
+    // Send synthetic candidate pointing to our relay
+    _sendSyntheticCandidate();
   }
 
   Future<void> _handleRemoteOffer(Map<String, dynamic> signal) async {
@@ -513,12 +668,16 @@ class CallService extends ChangeNotifier {
       });
       await _pc!.setLocalDescription(answer);
 
+      final cleanSdp = _stripCandidatesFromSdp(answer.sdp ?? '');
       _sendTcpSignal({
         'signalType': 'answer',
-        'sdp': answer.sdp,
+        'sdp': cleanSdp,
         'type': answer.type,
       });
       _log('Answer sent via TCP! ICE negotiating...');
+
+      // Send synthetic candidate pointing to our relay
+      _sendSyntheticCandidate();
     } catch (e) {
       _log('Handle offer error: $e');
       errorMessage = 'WebRTC setup failed: $e';
@@ -548,6 +707,9 @@ class CallService extends ChangeNotifier {
   }
 
   Future<void> _handleRemoteIce(Map<String, dynamic> signal) async {
+    final candidateStr = signal['candidate'] as String? ?? '';
+    final short =
+        candidateStr.length > 50 ? '${candidateStr.substring(0, 50)}...' : candidateStr;
     final candidate = RTCIceCandidate(
       signal['candidate'] as String?,
       signal['sdpMid'] as String?,
@@ -556,7 +718,7 @@ class CallService extends ChangeNotifier {
     if (_remoteDescSet && _pc != null) {
       try {
         await _pc!.addCandidate(candidate);
-        _log('ICE candidate added');
+        _log('Remote ICE added: $short');
       } catch (e) {
         _log('ICE add failed: $e');
       }
@@ -574,7 +736,6 @@ class CallService extends ChangeNotifier {
 
     switch (type) {
       case 'callOffer':
-        // Caller sent an invite
         if (_state != CallState.idle) {
           meshController.sendCallSignal(MeshPacketType.callEnd, {});
           return;
@@ -586,7 +747,6 @@ class CallService extends ChangeNotifier {
         break;
 
       case 'callAnswer':
-        // Callee accepted
         if (_state != CallState.offering) {
           _log('Got answer but state=$_state (ignoring)');
           return;
@@ -598,7 +758,6 @@ class CallService extends ChangeNotifier {
         break;
 
       case 'iceCandidate':
-        // "ready" signal from caller OR a real ICE candidate
         if (signal['ready'] == true && _state == CallState.connecting) {
           _log('Ready signal received from caller!');
           await _calleeStartPhase2();
@@ -679,15 +838,10 @@ class CallService extends ChangeNotifier {
     _pc = await createPeerConnection(_rtcConfig);
 
     _pc!.onIceCandidate = (candidate) {
+      // SUPPRESS all real ICE candidates — we use synthetic relay candidates only
       final c = candidate.candidate ?? '';
       final short = c.length > 60 ? '${c.substring(0, 60)}...' : c;
-      _log('ICE out: $short');
-      _sendTcpSignal({
-        'signalType': 'iceCandidate',
-        'candidate': candidate.candidate,
-        'sdpMid': candidate.sdpMid,
-        'sdpMLineIndex': candidate.sdpMLineIndex,
-      });
+      _log('ICE local (suppressed): $short');
     };
 
     _pc!.onIceGatheringState = (gatherState) {
@@ -695,14 +849,14 @@ class CallService extends ChangeNotifier {
     };
 
     _pc!.onTrack = (event) {
-      _log('onTrack: ${event.track?.kind} streams=${event.streams.length}');
+      _log('onTrack: ${event.track.kind} streams=${event.streams.length}');
       if (event.streams.isNotEmpty) {
         _remoteStream = event.streams[0];
         _log('Remote stream (${_remoteStream!.getTracks().length} tracks)');
         notifyListeners();
-      } else if (event.track != null) {
+      } else {
         _log('Orphan track — adding manually');
-        _addOrphanTrack(event.track!);
+        _addOrphanTrack(event.track);
       }
     };
 
@@ -718,12 +872,13 @@ class CallService extends ChangeNotifier {
           iceState == RTCIceConnectionState.RTCIceConnectionStateCompleted) {
         _state = CallState.connected;
         _callStartTime ??= DateTime.now();
-        _log('ICE CONNECTED — media flowing!');
+        _log('*** ICE CONNECTED — media flowing! ***');
         notifyListeners();
       } else if (iceState ==
           RTCIceConnectionState.RTCIceConnectionStateFailed) {
-        _log('ICE FAILED — no media path');
+        _log('ICE FAILED');
         errorMessage = 'ICE failed — phones cannot reach each other';
+        notifyListeners();
       }
     };
 
@@ -790,6 +945,9 @@ class CallService extends ChangeNotifier {
     _tcpServer = null;
     _tcpBuffer.clear();
 
+    // Stop UDP relay
+    _stopRelay();
+
     // Close WebRTC
     _localStream?.getTracks().forEach((t) => t.stop());
     _localStream?.dispose();
@@ -799,12 +957,7 @@ class CallService extends ChangeNotifier {
     _pc = null;
     _pendingCandidates.clear();
     _remoteDescSet = false;
-
-    // Unbind from p2p network (restore default routing)
-    try {
-      await WifiDirectService.unbindNetwork();
-      _log('Network unbound');
-    } catch (_) {}
+    _localP2pIp = null;
 
     // Remove Wi-Fi Direct group
     try {
@@ -818,9 +971,10 @@ class CallService extends ChangeNotifier {
     _isCaller = false;
     _callStartTime = null;
     pendingOffer = null;
+    _relaySentSyntheticCandidate = false;
     notifyListeners();
 
-    // Restart mesh (was stopped for Wi-Fi Direct)
+    // Restart mesh
     try {
       _log('Restarting mesh...');
       await Future.delayed(const Duration(seconds: 2));
