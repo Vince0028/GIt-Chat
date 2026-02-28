@@ -1015,6 +1015,10 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
               } else {
                 await StorageService.clearBroadcastMessages();
               }
+              // Broadcast clear to all peers
+              widget.meshController?.broadcastClearMessages(
+                groupId: widget.isGroupChat ? widget.groupId : null,
+              );
               Navigator.pop(ctx);
               _loadMessages();
               // Start 10-second cooldown

@@ -45,6 +45,7 @@ dependencies:
   path: ^1.9.1
   flutter_webrtc: ^0.12.12
   device_info_plus: ^12.3.0
+  flutter_blue_plus: 1.32.12
 
 dev_dependencies:
   flutter_test:

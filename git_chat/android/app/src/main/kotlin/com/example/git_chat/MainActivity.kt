@@ -137,13 +137,11 @@ class MainActivity : FlutterActivity() {
         mgr.discoverPeers(ch, object : WifiP2pManager.ActionListener {
             override fun onSuccess() {
                 Log.d(TAG, "Discovery started, waiting for peers...")
-                // Try multiple times with increasing delays (discovery can be slow)
-                attemptFindAndConnect(mgr, ch, result, attempt = 1, maxAttempts = 5)
+                attemptFindAndConnect(mgr, ch, result, attempt = 1, maxAttempts = 8)
             }
 
             override fun onFailure(reason: Int) {
                 Log.e(TAG, "Discovery failed: $reason, trying existing connection")
-                // Fall back to existing connection info
                 getConnectionInfo(result)
             }
         })
@@ -157,18 +155,26 @@ class MainActivity : FlutterActivity() {
         attempt: Int,
         maxAttempts: Int
     ) {
-        // Increasing delay: 3s, 5s, 7s, 9s, 11s
-        val delayMs = (1000 + attempt * 2000).toLong()
+        // Faster intervals: 2s, 2s, 3s, 3s, 4s, 4s, 5s, 5s
+        val delayMs = (1000 + (attempt / 2 + 1) * 1000).toLong()
         Log.d(TAG, "Attempt $attempt/$maxAttempts — waiting ${delayMs}ms for peers...")
         
         Handler(Looper.getMainLooper()).postDelayed({
+            // Re-trigger discovery every 3 attempts to keep scan fresh
+            if (attempt > 1 && attempt % 3 == 1) {
+                Log.d(TAG, "Re-triggering discoverPeers to refresh scan...")
+                mgr.discoverPeers(ch, object : WifiP2pManager.ActionListener {
+                    override fun onSuccess() { Log.d(TAG, "Re-discovery started") }
+                    override fun onFailure(r: Int) { Log.d(TAG, "Re-discovery failed: $r") }
+                })
+            }
+
             mgr.requestPeers(ch) { peers ->
                 val deviceList = peers.deviceList.toList()
                 Log.d(TAG, "Attempt $attempt: found ${deviceList.size} peers")
 
                 if (deviceList.isEmpty()) {
                     if (attempt < maxAttempts) {
-                        // Retry — discovery might take longer
                         attemptFindAndConnect(mgr, ch, result, attempt + 1, maxAttempts)
                     } else {
                         Log.d(TAG, "No peers after $maxAttempts attempts, trying existing connection")

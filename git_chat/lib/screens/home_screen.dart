@@ -6,6 +6,7 @@ import '../theme/app_theme.dart';
 import '../models/group.dart';
 import '../services/storage_service.dart';
 import '../services/mesh_controller.dart';
+import '../services/tower_service.dart';
 import 'chat_screen.dart';
 import 'create_group_screen.dart';
 import 'permission_modal.dart';
@@ -949,6 +950,58 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
           const Spacer(),
+          // Tower status indicator
+          if (widget.meshController.towerService.isConnected) ...[
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: AppTheme.orange.withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(4),
+                border: Border.all(
+                  color: AppTheme.orange.withValues(alpha: 0.4),
+                ),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.cell_tower, color: AppTheme.orange, size: 10),
+                  const SizedBox(width: 4),
+                  Text(
+                    'TOWER',
+                    style: GoogleFonts.firaCode(
+                      color: AppTheme.orange,
+                      fontSize: 8,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+          ] else if (widget.meshController.towerService.state == TowerState.scanning) ...[
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: AppTheme.textMuted.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.cell_tower, color: AppTheme.textMuted, size: 10),
+                  const SizedBox(width: 4),
+                  Text(
+                    'SCAN',
+                    style: GoogleFonts.firaCode(
+                      color: AppTheme.textMuted,
+                      fontSize: 8,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+          ],
           Text(
             widget.meshController.isMeshActive ? 'mesh active' : 'mesh offline',
             style: GoogleFonts.firaCode(

@@ -319,8 +319,8 @@ class CallService extends ChangeNotifier {
       await Future.delayed(const Duration(milliseconds: 500));
 
       bool connected = false;
-      for (int attempt = 1; attempt <= 5 && !connected; attempt++) {
-        _log('Wi-Fi Direct discovery attempt $attempt/5...');
+      for (int attempt = 1; attempt <= 7 && !connected; attempt++) {
+        _log('Wi-Fi Direct discovery attempt $attempt/7...');
         final result = await WifiDirectService.discoverAndConnect();
         final groupFormed = result['groupFormed'] as bool? ?? false;
         _log('WFD: groupFormed=$groupFormed');
@@ -328,9 +328,9 @@ class CallService extends ChangeNotifier {
           connected = true;
           break;
         }
-        if (attempt < 5) {
-          _log('Retrying in 3s...');
-          await Future.delayed(const Duration(seconds: 3));
+        if (attempt < 7) {
+          _log('Retrying in 2s...');
+          await Future.delayed(const Duration(seconds: 2));
         }
       }
 

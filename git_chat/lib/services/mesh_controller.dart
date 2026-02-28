@@ -11,6 +11,7 @@ import '../models/message.dart';
 import '../models/group.dart';
 import '../services/storage_service.dart';
 import '../services/permission_service.dart';
+import '../services/tower_service.dart';
 
 /// Represents a peer connected via Nearby Connections API
 class MeshPeer {
@@ -48,6 +49,7 @@ enum MeshPacketType {
   peerInfo,      // Device model + metadata exchange after connect
   ping,          // RTT measurement request
   pong,          // RTT measurement response
+  clearMessages, // Clear all messages in a group or global chat
 }
 
 /// A wrapper for all data sent over the mesh
@@ -77,6 +79,10 @@ class MeshController extends ChangeNotifier {
   final Map<String, MeshPeer> _peers = {};
   bool _isAdvertising = false;
   bool _isDiscovering = false;
+
+  // Arduino Signal Tower (optional BLE relay)
+  final TowerService towerService = TowerService();
+  StreamSubscription<String>? _towerMsgSub;
 
   // Preserved endpoint names from _onConnectionInit (fixes 'peer' fallback bug)
   final Map<String, String> _endpointNames = {};
@@ -159,6 +165,8 @@ class MeshController extends ChangeNotifier {
   @override
   void dispose() {
     _pingTimer?.cancel();
+    _towerMsgSub?.cancel();
+    towerService.dispose();
     stopMesh();
     _incomingMessages.close();
     _incomingGroupInvites.close();
@@ -242,11 +250,37 @@ class MeshController extends ChangeNotifier {
     }
 
     notifyListeners();
+
+    // Start Arduino tower scan (optional — mesh works without it)
+    _startTowerService();
+  }
+
+  /// Start the BLE tower scanner and wire up message relay
+  void _startTowerService() {
+    _towerMsgSub?.cancel();
+    _towerMsgSub = towerService.incomingTowerMessages.listen((jsonStr) {
+      debugPrint('[MESH] Tower relayed message received');
+      try {
+        final bytes = Uint8List.fromList(utf8.encode(jsonStr));
+        _handleIncomingPayload(bytes, 'tower');
+      } catch (e) {
+        debugPrint('[MESH] Failed to handle tower message: $e');
+      }
+    });
+    towerService.addListener(_onTowerUpdate);
+    towerService.startScan();
+  }
+
+  void _onTowerUpdate() {
+    notifyListeners(); // propagate tower state changes to UI
   }
 
   void stopMesh() {
     _pingTimer?.cancel();
     _pingTimer = null;
+    _towerMsgSub?.cancel();
+    towerService.removeListener(_onTowerUpdate);
+    towerService.stop();
     Nearby().stopAdvertising();
     Nearby().stopDiscovery();
     Nearby().stopAllEndpoints();
@@ -480,6 +514,13 @@ class MeshController extends ChangeNotifier {
           case MeshPacketType.callAnswer:
           case MeshPacketType.iceCandidate:
           case MeshPacketType.callEnd:
+            // Ignore own call signals that bounced back via mesh/tower
+            final signalFrom = packet.payload['from'] as String? ?? '';
+            final myName = StorageService.getUsername() ?? '';
+            if (signalFrom.isNotEmpty && signalFrom == myName) {
+              debugPrint('[MESH] Ignoring own call signal ($signalFrom)');
+              break;
+            }
             packet.payload['signalType'] = packet.type.name;
             packet.payload['sourceId'] = sourceId;
             _incomingCallSignals.add(packet.payload);
@@ -498,6 +539,9 @@ class MeshController extends ChangeNotifier {
             break;
           case MeshPacketType.pong:
             _handlePong(packet.payload, sourceId);
+            break;
+          case MeshPacketType.clearMessages:
+            _handleClearMessages(packet.payload, sourceId);
             break;
         }
       } else {
@@ -794,10 +838,23 @@ class MeshController extends ChangeNotifier {
     MeshPacketType type,
     Map<String, dynamic> data,
   ) async {
+    // Stamp with sender username so receivers can ignore self-echoes
+    data['from'] = StorageService.getUsername() ?? 'anon';
     await _sendPacketToPeers(MeshPacket(type: type, payload: data));
   }
 
   // ── Public API: Send Messages ────────────────────────
+
+  /// Broadcast a "clear all messages" command to all peers
+  Future<void> broadcastClearMessages({String? groupId}) async {
+    await _sendPacketToPeers(
+      MeshPacket(
+        type: MeshPacketType.clearMessages,
+        payload: {'groupId': groupId ?? ''},
+      ),
+    );
+    debugPrint('[MESH] Broadcasted clearMessages (group=${groupId ?? 'global'})');
+  }
 
   /// Send a message (broadcast or group)
   Future<void> broadcastLocalMessage(ChatMessage message) async {
@@ -980,14 +1037,25 @@ class MeshController extends ChangeNotifier {
         .map((p) => p.endpointId)
         .toList();
 
-    if (targetIds.isEmpty) return;
+    if (targetIds.isEmpty && !towerService.isConnected) return;
 
     try {
-      final bytes = Uint8List.fromList(utf8.encode(jsonEncode(packet.toMap())));
+      final jsonStr = jsonEncode(packet.toMap());
+      final bytes = Uint8List.fromList(utf8.encode(jsonStr));
       for (final id in targetIds) {
         await Nearby().sendBytesPayload(id, bytes);
       }
-      debugPrint('[MESH] Sent packet to ${targetIds.length} peers');
+      if (targetIds.isNotEmpty) {
+        debugPrint('[MESH] Sent packet to ${targetIds.length} peers');
+      }
+
+      // Also relay through Arduino tower if connected (text messages & invites)
+      if (towerService.isConnected &&
+          (packet.type == MeshPacketType.message ||
+           packet.type == MeshPacketType.groupInvite ||
+           packet.type == MeshPacketType.groupJoinAck)) {
+        towerService.sendMessage(jsonStr);
+      }
     } catch (e) {
       debugPrint('[MESH] Failed to send packet: $e');
     }
@@ -1321,6 +1389,28 @@ class MeshController extends ChangeNotifier {
     if (rttMs < 1200) return '~10-20m (moderate)';
     if (rttMs < 2000) return '~20-30m (far)';
     return '~30m+ (very far)';
+  }
+
+  /// Handle incoming "clear all messages" from a peer
+  void _handleClearMessages(Map<String, dynamic> data, String sourceId) {
+    final groupId = data['groupId'] as String? ?? '';
+    debugPrint('[MESH] Received clearMessages from $sourceId (group=$groupId)');
+
+    if (groupId.isNotEmpty) {
+      StorageService.clearGroupMessages(groupId);
+    } else {
+      StorageService.clearBroadcastMessages();
+    }
+
+    // Notify UI to refresh
+    _incomingMessages.add(ChatMessage(
+      id: 'clear_${DateTime.now().millisecondsSinceEpoch}',
+      from: 'system',
+      to: 'broadcast',
+      body: '',
+      timestamp: DateTime.now(),
+      groupId: groupId.isNotEmpty ? groupId : null,
+    ));
   }
 
   // ── Group Utilities ──────────────────────────────────
