@@ -67,7 +67,138 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
     }
 
     if (mounted) {
-      Navigator.of(context).pop(group);
+      // Show success dialog with Group ID for sharing
+      await showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: AppTheme.bgCard,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: const BorderSide(color: AppTheme.green),
+          ),
+          title: Row(
+            children: [
+              const Icon(Icons.check_circle, color: AppTheme.green, size: 20),
+              const SizedBox(width: 8),
+              Text(
+                'Group Created!',
+                style: GoogleFonts.firaCode(
+                  color: AppTheme.green,
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Share these credentials with\nothers so they can join:',
+                style: GoogleFonts.firaCode(
+                  color: AppTheme.textSecondary,
+                  fontSize: 11,
+                ),
+              ),
+              const SizedBox(height: 16),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: AppTheme.bgDark,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppTheme.border),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Text(
+                          'Group ID:',
+                          style: GoogleFonts.firaCode(
+                            color: AppTheme.textMuted,
+                            fontSize: 10,
+                          ),
+                        ),
+                        const Spacer(),
+                        GestureDetector(
+                          onTap: () {
+                            Clipboard.setData(ClipboardData(text: groupId));
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(
+                                  '> group ID copied!',
+                                  style: GoogleFonts.firaCode(fontSize: 12),
+                                ),
+                                backgroundColor: AppTheme.bgCard,
+                                behavior: SnackBarBehavior.floating,
+                                duration: const Duration(seconds: 1),
+                              ),
+                            );
+                          },
+                          child: const Icon(
+                            Icons.copy,
+                            size: 14,
+                            color: AppTheme.cyan,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      groupId,
+                      style: GoogleFonts.firaCode(
+                        color: AppTheme.cyan,
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    if (_usePassword) ...[
+                      const SizedBox(height: 12),
+                      Text(
+                        'Password:',
+                        style: GoogleFonts.firaCode(
+                          color: AppTheme.textMuted,
+                          fontSize: 10,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        _passwordController.text.trim(),
+                        style: GoogleFonts.firaCode(
+                          color: AppTheme.orange,
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            ElevatedButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              style: ElevatedButton.styleFrom(backgroundColor: AppTheme.green),
+              child: Text(
+                'GOT IT',
+                style: GoogleFonts.firaCode(
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+
+      if (mounted) {
+        Navigator.of(context).pop(group);
+      }
     }
   }
 

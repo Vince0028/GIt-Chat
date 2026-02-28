@@ -38,6 +38,8 @@ enum MeshPacketType {
   callAnswer,
   iceCandidate,
   callEnd,
+  syncRequest,   // "Here are the message IDs I have — what am I missing?"
+  syncResponse,  // "Here are the messages you're missing"
 }
 
 /// A wrapper for all data sent over the mesh
@@ -68,6 +70,11 @@ class MeshController extends ChangeNotifier {
   bool _isAdvertising = false;
   bool _isDiscovering = false;
 
+  // Connection retry settings
+  static const int _maxConnectionRetries = 7;
+  static const int _baseRetryDelayMs = 1000; // 1 second base, doubles each retry
+  final Map<String, int> _connectionAttempts = {}; // endpointId -> attempt count
+
   // Image chunking — collect incoming chunks until all arrive
   // messageId -> { 'totalChunks': int, 'meta': Map, 'chunks': Map<int,String> }
   final Map<String, Map<String, dynamic>> _chunkCollectors = {};
@@ -90,6 +97,15 @@ class MeshController extends ChangeNotifier {
 
   final Set<String> _seenMessageIds = {};
 
+  // Pending group invites (received but not yet joined)
+  final Map<String, MeshGroup> _pendingGroupInvites = {};
+
+  // Track peers we've already synced with to avoid duplicate sync storms
+  final Set<String> _syncedPeers = {};
+
+  // Max messages to send in a single sync response (prevent BLE overload)
+  static const int _maxSyncBatch = 50;
+
   // ── Getters ──────────────────────────────────────────
   List<MeshPeer> get connectedPeers =>
       _peers.values.where((p) => p.isConnected).toList();
@@ -103,6 +119,8 @@ class MeshController extends ChangeNotifier {
       _passwordProtectedInvites.stream;
   Map<String, double> get fileTransferProgress =>
       Map.unmodifiable(_fileTransferProgress);
+  Map<String, MeshGroup> get pendingGroupInvites =>
+      Map.unmodifiable(_pendingGroupInvites);
 
   // Call signaling
   final StreamController<Map<String, dynamic>> _incomingCallSignals =
@@ -165,31 +183,18 @@ class MeshController extends ChangeNotifier {
         strategy,
         onEndpointFound: (id, name, serviceId) async {
           debugPrint(
-            '[MESH] Found peer: $name ($id). Delaying to avoid collision...',
+            '[MESH] Found peer: $name ($id). Attempting connection...',
           );
 
           if (_peers.containsKey(id) && _peers[id]!.isConnected) return;
 
-          // CRITICAL FIX: Random jitter (500-2000ms) to prevent P2P_CLUSTER
-          // simultaneous connection collisions (both devices requesting at the exact same millisecond)
-          await Future.delayed(
-            Duration(milliseconds: 500 + Random().nextInt(1500)),
-          );
-
-          try {
-            await Nearby().requestConnection(
-              username,
-              id,
-              onConnectionInitiated: _onConnectionInit,
-              onConnectionResult: _onConnectionResult,
-              onDisconnected: _onDisconnected,
-            );
-          } catch (e) {
-            debugPrint('[MESH] Connection request failed: $e');
-          }
+          // Reset attempt counter for newly found peer
+          _connectionAttempts[id] = 0;
+          await _attemptConnectionWithRetry(username, id, name);
         },
         onEndpointLost: (id) {
           debugPrint('[MESH] Lost peer from radar: $id');
+          _connectionAttempts.remove(id);
         },
         serviceId: _serviceId,
       );
@@ -208,6 +213,8 @@ class MeshController extends ChangeNotifier {
     _isAdvertising = false;
     _isDiscovering = false;
     _peers.clear();
+    _syncedPeers.clear();
+    _connectionAttempts.clear();
     notifyListeners();
   }
 
@@ -281,6 +288,9 @@ class MeshController extends ChangeNotifier {
         );
       }
       notifyListeners();
+
+      // ── Sync-on-Connect: request message history from this peer ──
+      _requestSyncFromPeer(id);
     } else {
       debugPrint('[MESH] Connection failed or rejected: $id');
       _peers.remove(id);
@@ -291,7 +301,78 @@ class MeshController extends ChangeNotifier {
   void _onDisconnected(String id) {
     debugPrint('[MESH] Disconnected from peer: $id');
     _peers.remove(id);
+    _syncedPeers.remove(id);
+    _connectionAttempts.remove(id);
     notifyListeners();
+  }
+
+  // ── Connection Retry with Exponential Backoff ────────
+
+  /// Attempts to connect to a peer with up to [_maxConnectionRetries] retries.
+  /// Uses exponential backoff + random jitter to handle long-range discovery
+  /// and avoid P2P_CLUSTER simultaneous connection collisions.
+  Future<void> _attemptConnectionWithRetry(
+    String username,
+    String endpointId,
+    String endpointName,
+  ) async {
+    for (int attempt = 1; attempt <= _maxConnectionRetries; attempt++) {
+      // If already connected (maybe via the other device's request), stop
+      if (_peers.containsKey(endpointId) && _peers[endpointId]!.isConnected) {
+        debugPrint('[MESH] Peer $endpointId already connected, skipping retry');
+        _connectionAttempts.remove(endpointId);
+        return;
+      }
+
+      // If peer was lost from radar or mesh stopped, abort
+      if (!_isDiscovering && !_isAdvertising) return;
+
+      // Exponential backoff: 1s, 2s, 4s, 8s... + random jitter (0-1.5s)
+      final backoff = _baseRetryDelayMs * (1 << (attempt - 1));
+      final jitter = Random().nextInt(1500);
+      final delay = backoff + jitter;
+
+      debugPrint(
+        '[MESH] Connection attempt $attempt/$_maxConnectionRetries '
+        'to $endpointName ($endpointId) — waiting ${delay}ms...',
+      );
+
+      await Future.delayed(Duration(milliseconds: delay));
+
+      // Double-check connection status after the delay
+      if (_peers.containsKey(endpointId) && _peers[endpointId]!.isConnected) {
+        _connectionAttempts.remove(endpointId);
+        return;
+      }
+
+      try {
+        _connectionAttempts[endpointId] = attempt;
+        await Nearby().requestConnection(
+          username,
+          endpointId,
+          onConnectionInitiated: _onConnectionInit,
+          onConnectionResult: _onConnectionResult,
+          onDisconnected: _onDisconnected,
+        );
+        // If requestConnection didn't throw, the handshake started successfully
+        debugPrint(
+          '[MESH] ✅ Connection request accepted on attempt $attempt',
+        );
+        _connectionAttempts.remove(endpointId);
+        return;
+      } catch (e) {
+        debugPrint(
+          '[MESH] ❌ Attempt $attempt/$_maxConnectionRetries failed: $e',
+        );
+        if (attempt == _maxConnectionRetries) {
+          debugPrint(
+            '[MESH] Gave up connecting to $endpointName after '
+            '$_maxConnectionRetries attempts',
+          );
+          _connectionAttempts.remove(endpointId);
+        }
+      }
+    }
   }
 
   // ── Packet Router ────────────────────────────────────
@@ -336,6 +417,12 @@ class MeshController extends ChangeNotifier {
             packet.payload['signalType'] = packet.type.name;
             packet.payload['sourceId'] = sourceId;
             _incomingCallSignals.add(packet.payload);
+            break;
+          case MeshPacketType.syncRequest:
+            _handleSyncRequest(packet.payload, sourceId);
+            break;
+          case MeshPacketType.syncResponse:
+            _handleSyncResponse(packet.payload, sourceId);
             break;
         }
       } else {
@@ -573,17 +660,11 @@ class MeshController extends ChangeNotifier {
     // If already a member, skip
     if (StorageService.isGroupMember(group.id)) return;
 
-    // If group has a password, don't auto-join — ask user first
-    if (group.password != null && group.password!.isNotEmpty) {
-      debugPrint('[MESH] Group "${group.name}" is password-protected.');
-      _passwordProtectedInvites.add(group);
-      notifyListeners();
-      return;
-    }
-
-    // No password — auto-join
-    StorageService.saveGroup(group);
-    _incomingGroupInvites.add(group);
+    // Store as pending invite — user must manually join via Group ID + Password
+    _pendingGroupInvites[group.id] = group;
+    debugPrint(
+      '[MESH] Stored pending invite for "${group.name}" (ID: ${group.id})',
+    );
     notifyListeners();
   }
 
@@ -595,6 +676,32 @@ class MeshController extends ChangeNotifier {
       debugPrint('[MESH] $username joined group $groupId');
       notifyListeners();
     }
+  }
+
+  /// Attempt to join a group using Group ID and password.
+  /// Returns: 'success', 'not_found', or 'wrong_password'
+  Future<String> joinGroupWithCredentials(String groupId, String password) async {
+    final group = _pendingGroupInvites[groupId];
+    if (group == null) return 'not_found';
+
+    // Check password if group has one
+    if (group.password != null && group.password!.isNotEmpty) {
+      if (password != group.password) return 'wrong_password';
+    }
+
+    // Join the group
+    final username = StorageService.getUsername() ?? 'anon';
+    if (!group.members.contains(username)) {
+      group.members.add(username);
+    }
+    StorageService.saveGroup(group);
+    _pendingGroupInvites.remove(groupId);
+    notifyListeners();
+
+    // Request past chat history for this group from connected peers
+    await requestGroupSync(groupId);
+
+    return 'success';
   }
 
   // ── Public API: Call Signaling ───────────────────────
@@ -801,6 +908,227 @@ class MeshController extends ChangeNotifier {
     } catch (e) {
       debugPrint('[MESH] Failed to send packet: $e');
     }
+  }
+
+  // ── Gossip Protocol: Sync-on-Connect ─────────────────
+
+  /// Send a sync request to a newly connected peer.
+  /// Includes all our message IDs + group membership so they know what to send.
+  Future<void> _requestSyncFromPeer(String peerId) async {
+    if (_syncedPeers.contains(peerId)) return;
+    _syncedPeers.add(peerId);
+
+    // Gather all text message IDs we already have
+    final allMessages = StorageService.getMessages(); // global/broadcast
+    final groups = StorageService.getGroups();
+    final myMessageIds = <String>{};
+
+    for (final m in allMessages) {
+      myMessageIds.add(m.id);
+    }
+    for (final g in groups) {
+      final groupMsgs = StorageService.getMessages(groupId: g.id);
+      for (final m in groupMsgs) {
+        myMessageIds.add(m.id);
+      }
+    }
+
+    final myGroupIds = groups.map((g) => g.id).toList();
+
+    final payload = {
+      'messageIds': myMessageIds.toList(),
+      'groupIds': myGroupIds,
+    };
+
+    debugPrint(
+      '[SYNC] Requesting sync from $peerId '
+      '(I have ${myMessageIds.length} msgs, ${myGroupIds.length} groups)',
+    );
+
+    try {
+      final packet = MeshPacket(
+        type: MeshPacketType.syncRequest,
+        payload: payload,
+      );
+      final bytes = Uint8List.fromList(utf8.encode(jsonEncode(packet.toMap())));
+      await Nearby().sendBytesPayload(peerId, bytes);
+    } catch (e) {
+      debugPrint('[SYNC] Failed to send sync request to $peerId: $e');
+    }
+  }
+
+  /// Handle an incoming sync request from a peer.
+  /// Compare their message IDs against ours and send back what they're missing.
+  void _handleSyncRequest(
+    Map<String, dynamic> data,
+    String sourceId,
+  ) async {
+    final theirMessageIds = Set<String>.from(
+      (data['messageIds'] as List?)?.cast<String>() ?? [],
+    );
+    final theirGroupIds = Set<String>.from(
+      (data['groupIds'] as List?)?.cast<String>() ?? [],
+    );
+
+    debugPrint(
+      '[SYNC] Peer $sourceId has ${theirMessageIds.length} msgs, '
+      '${theirGroupIds.length} groups',
+    );
+
+    // ── 1) Find text messages they're missing (global + groups) ──
+    final missingMessages = <Map<String, dynamic>>[];
+
+    // Global/broadcast messages
+    final globalMsgs = StorageService.getMessages();
+    for (final m in globalMsgs) {
+      if (!theirMessageIds.contains(m.id) &&
+          !m.isDeleted &&
+          m.messageType == 'text') {
+        missingMessages.add(m.toMap());
+        if (missingMessages.length >= _maxSyncBatch) break;
+      }
+    }
+
+    // Group messages — only from groups the peer is also a member of
+    if (missingMessages.length < _maxSyncBatch) {
+      final myGroups = StorageService.getGroups();
+      for (final g in myGroups) {
+        if (!theirGroupIds.contains(g.id)) continue; // they're not in this group
+        final groupMsgs = StorageService.getMessages(groupId: g.id);
+        for (final m in groupMsgs) {
+          if (!theirMessageIds.contains(m.id) &&
+              !m.isDeleted &&
+              m.messageType == 'text') {
+            missingMessages.add(m.toMap());
+            if (missingMessages.length >= _maxSyncBatch) break;
+          }
+        }
+        if (missingMessages.length >= _maxSyncBatch) break;
+      }
+    }
+
+    // ── 2) Find group invites they might not have yet ──
+    final missingGroups = <Map<String, dynamic>>[];
+    final myGroups = StorageService.getGroups();
+    for (final g in myGroups) {
+      if (!theirGroupIds.contains(g.id)) {
+        // They don't have this group — send invite so they can join via ID+password
+        missingGroups.add(g.toMap());
+      }
+    }
+
+    debugPrint(
+      '[SYNC] Sending ${missingMessages.length} msgs + '
+      '${missingGroups.length} group invites to $sourceId',
+    );
+
+    if (missingMessages.isEmpty && missingGroups.isEmpty) return;
+
+    // Send sync response
+    final responsePayload = {
+      'messages': missingMessages,
+      'groups': missingGroups,
+    };
+
+    try {
+      final packet = MeshPacket(
+        type: MeshPacketType.syncResponse,
+        payload: responsePayload,
+      );
+      final bytes = Uint8List.fromList(utf8.encode(jsonEncode(packet.toMap())));
+      await Nearby().sendBytesPayload(sourceId, bytes);
+    } catch (e) {
+      debugPrint('[SYNC] Failed to send sync response to $sourceId: $e');
+    }
+
+    // Also send our own sync request back (bidirectional sync)
+    _requestSyncFromPeer(sourceId);
+  }
+
+  /// Handle an incoming sync response — save the messages we were missing.
+  void _handleSyncResponse(
+    Map<String, dynamic> data,
+    String sourceId,
+  ) {
+    final messagesList = data['messages'] as List? ?? [];
+    final groupsList = data['groups'] as List? ?? [];
+
+    int savedMsgs = 0;
+    int savedGroups = 0;
+
+    // ── Process incoming group invites (store as pending) ──
+    for (final gMap in groupsList) {
+      try {
+        final group = MeshGroup.fromMap(Map<String, dynamic>.from(gMap as Map));
+        if (!StorageService.isGroupMember(group.id) &&
+            !_pendingGroupInvites.containsKey(group.id)) {
+          _pendingGroupInvites[group.id] = group;
+          savedGroups++;
+        }
+      } catch (e) {
+        debugPrint('[SYNC] Failed to parse group: $e');
+      }
+    }
+
+    // ── Process incoming messages ──
+    for (final mMap in messagesList) {
+      try {
+        final msg = ChatMessage.fromMap(Map<String, dynamic>.from(mMap as Map));
+
+        // Skip if we already have it
+        if (StorageService.hasMessage(msg.id)) continue;
+        if (_seenMessageIds.contains(msg.id)) continue;
+
+        _seenMessageIds.add(msg.id);
+
+        // Check if this message is for us
+        final myUsername = StorageService.getUsername() ?? 'anon';
+        bool isForMe = false;
+
+        if (msg.groupId != null && msg.groupId!.isNotEmpty) {
+          isForMe = StorageService.isGroupMember(msg.groupId!);
+        } else {
+          isForMe = (msg.to == myUsername || msg.to == 'broadcast');
+        }
+
+        if (isForMe) {
+          StorageService.saveMessage(msg);
+          _incomingMessages.add(msg);
+          savedMsgs++;
+        }
+      } catch (e) {
+        debugPrint('[SYNC] Failed to parse message: $e');
+      }
+    }
+
+    if (savedMsgs > 0 || savedGroups > 0) {
+      debugPrint(
+        '[SYNC] ✅ Synced $savedMsgs messages + $savedGroups groups from $sourceId',
+      );
+      notifyListeners();
+    }
+  }
+
+  /// Request sync for a specific group's history from all connected peers.
+  /// Called after a user joins a group via ID+password.
+  Future<void> requestGroupSync(String groupId) async {
+    final allMessages = StorageService.getMessages(groupId: groupId);
+    final myMessageIds = allMessages.map((m) => m.id).toList();
+    final myGroupIds = StorageService.getGroups().map((g) => g.id).toList();
+
+    final payload = {
+      'messageIds': myMessageIds,
+      'groupIds': myGroupIds,
+    };
+
+    debugPrint(
+      '[SYNC] Requesting group sync for $groupId '
+      '(I have ${myMessageIds.length} msgs in this group)',
+    );
+
+    await _sendPacketToPeers(
+      MeshPacket(type: MeshPacketType.syncRequest, payload: payload),
+    );
   }
 
   // ── Group Utilities ──────────────────────────────────

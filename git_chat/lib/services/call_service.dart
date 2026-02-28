@@ -49,6 +49,7 @@ class CallService extends ChangeNotifier {
   bool _isCaller = false;
   String _remotePeer = '';
   DateTime? _callStartTime;
+  bool _phase2Started = false;  // Guard: prevent multiple Phase 2 invocations
 
   // ICE candidate buffer
   final List<RTCIceCandidate> _pendingCandidates = [];
@@ -134,9 +135,8 @@ class CallService extends ChangeNotifier {
     _remoteDescSet = false;
     _pendingCandidates.clear();
     _relaySentSyntheticCandidate = false;
+    _phase2Started = false;
     notifyListeners();
-
-    // Pre-check: mesh peers
     final peerCount = meshController.connectedPeers.length;
     _log('Mesh peers: $peerCount');
     if (peerCount == 0) {
@@ -195,9 +195,8 @@ class CallService extends ChangeNotifier {
     _remoteDescSet = false;
     _pendingCandidates.clear();
     _relaySentSyntheticCandidate = false;
+    _phase2Started = false;
     notifyListeners();
-
-    // Check permissions
     final camOk = await Permission.camera.isGranted;
     final micOk = await Permission.microphone.isGranted;
     _log('Perms — cam:$camOk mic:$micOk');
@@ -221,14 +220,22 @@ class CallService extends ChangeNotifier {
 
   /// Caller: send ready → stop mesh → WFD group → TCP → exchange IPs → relay → WebRTC
   Future<void> _callerStartPhase2() async {
+    if (_phase2Started) {
+      _log('Phase 2 already started (ignoring duplicate)');
+      return;
+    }
+    _phase2Started = true;
     _state = CallState.connecting;
     notifyListeners();
 
     try {
-      _log('Sending ready signal over mesh...');
-      await meshController.sendCallSignal(MeshPacketType.iceCandidate, {
-        'ready': true,
-      });
+      _log('Sending ready signal over mesh (3x for reliability)...');
+      for (int i = 0; i < 3; i++) {
+        await meshController.sendCallSignal(MeshPacketType.iceCandidate, {
+          'ready': true,
+        });
+        if (i < 2) await Future.delayed(const Duration(milliseconds: 500));
+      }
 
       _log('Waiting for signal delivery...');
       await Future.delayed(const Duration(seconds: 2));
@@ -268,7 +275,7 @@ class CallService extends ChangeNotifier {
 
       final socket = await _tcpServer!.first.timeout(
         const Duration(seconds: 90),
-        onTimeout: () => throw TimeoutException('Callee never connected'),
+        onTimeout: () => throw TimeoutException('Callee never connected to TCP'),
       );
       _tcpSocket = socket;
       _log('Callee connected via TCP!');
@@ -290,6 +297,11 @@ class CallService extends ChangeNotifier {
 
   /// Callee: stop mesh → discover WFD → TCP → exchange IPs → relay → wait for offer
   Future<void> _calleeStartPhase2() async {
+    if (_phase2Started) {
+      _log('Phase 2 already started (ignoring duplicate)');
+      return;
+    }
+    _phase2Started = true;
     try {
       _log('Waiting for caller to set up group...');
       await Future.delayed(const Duration(seconds: 4));
@@ -304,8 +316,8 @@ class CallService extends ChangeNotifier {
       await Future.delayed(const Duration(milliseconds: 500));
 
       bool connected = false;
-      for (int attempt = 1; attempt <= 3 && !connected; attempt++) {
-        _log('Wi-Fi Direct discovery attempt $attempt/3...');
+      for (int attempt = 1; attempt <= 5 && !connected; attempt++) {
+        _log('Wi-Fi Direct discovery attempt $attempt/5...');
         final result = await WifiDirectService.discoverAndConnect();
         final groupFormed = result['groupFormed'] as bool? ?? false;
         _log('WFD: groupFormed=$groupFormed');
@@ -313,14 +325,14 @@ class CallService extends ChangeNotifier {
           connected = true;
           break;
         }
-        if (attempt < 3) {
+        if (attempt < 5) {
           _log('Retrying in 3s...');
           await Future.delayed(const Duration(seconds: 3));
         }
       }
 
       if (!connected) {
-        _log('Discovery returned false — polling...');
+        _log('Discovery returned false — polling connection info...');
         for (int i = 0; i < 20; i++) {
           final info = await WifiDirectService.getConnectionInfo();
           if (info['groupFormed'] == true) {
@@ -972,6 +984,7 @@ class CallService extends ChangeNotifier {
     _callStartTime = null;
     pendingOffer = null;
     _relaySentSyntheticCandidate = false;
+    _phase2Started = false;
     notifyListeners();
 
     // Restart mesh

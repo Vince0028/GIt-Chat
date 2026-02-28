@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -22,8 +21,6 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   List<MeshGroup> _groups = [];
   String _username = '';
-  StreamSubscription<MeshGroup>? _inviteSub;
-  StreamSubscription<MeshGroup>? _passwordInviteSub;
   bool _permissionShown = false;
 
   @override
@@ -31,19 +28,6 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     _username = StorageService.getUsername() ?? 'anon';
     _loadGroups();
-
-    // Listen for group invites from the mesh
-    _inviteSub = widget.meshController.incomingGroupInvites.listen((group) {
-      _loadGroups();
-      _showInviteSnackbar(group);
-    });
-
-    // Listen for password-protected group invites
-    _passwordInviteSub = widget.meshController.passwordProtectedInvites.listen((
-      group,
-    ) {
-      _showPasswordDialog(group);
-    });
 
     widget.meshController.addListener(_onMeshUpdate);
 
@@ -71,32 +55,12 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  void _showInviteSnackbar(MeshGroup group) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          '> New mesh group joined: ${group.name}',
-          style: GoogleFonts.firaCode(fontSize: 12),
-        ),
-        backgroundColor: AppTheme.bgCard,
-        behavior: SnackBarBehavior.floating,
-        action: SnackBarAction(
-          label: 'OPEN',
-          textColor: AppTheme.green,
-          onPressed: () => _openGroupChat(group),
-        ),
-      ),
-    );
-  }
-
-  void _showPasswordDialog(MeshGroup group) {
-    if (!mounted) return;
+  void _showJoinGroupDialog() {
+    final groupIdController = TextEditingController();
     final passwordController = TextEditingController();
 
     showDialog(
       context: context,
-      barrierDismissible: false,
       builder: (ctx) => AlertDialog(
         backgroundColor: AppTheme.bgCard,
         shape: RoundedRectangleBorder(
@@ -105,16 +69,14 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
         title: Row(
           children: [
-            const Icon(Icons.lock_outline, color: AppTheme.orange, size: 20),
+            const Icon(Icons.login, color: AppTheme.cyan, size: 20),
             const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                'Join "${group.name}"',
-                style: GoogleFonts.firaCode(
-                  color: AppTheme.textPrimary,
-                  fontSize: 14,
-                  fontWeight: FontWeight.bold,
-                ),
+            Text(
+              'Join Group',
+              style: GoogleFonts.firaCode(
+                color: AppTheme.textPrimary,
+                fontSize: 14,
+                fontWeight: FontWeight.bold,
               ),
             ),
           ],
@@ -124,7 +86,7 @@ class _HomeScreenState extends State<HomeScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'This group is password-protected.\nEnter the password to join.',
+              'Enter the Group ID and password\nshared by the group creator.',
               style: GoogleFonts.firaCode(
                 color: AppTheme.textSecondary,
                 fontSize: 11,
@@ -132,15 +94,36 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             const SizedBox(height: 16),
             TextField(
-              controller: passwordController,
-              obscureText: true,
+              controller: groupIdController,
               autofocus: true,
               style: GoogleFonts.firaCode(
                 color: AppTheme.textPrimary,
                 fontSize: 14,
               ),
+              textCapitalization: TextCapitalization.characters,
               decoration: InputDecoration(
-                hintText: 'password',
+                hintText: 'MESH_XXXXXX',
+                prefixIcon: const Icon(
+                  Icons.tag,
+                  color: AppTheme.cyan,
+                  size: 18,
+                ),
+                hintStyle: GoogleFonts.firaCode(
+                  color: AppTheme.textMuted,
+                  fontSize: 14,
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: passwordController,
+              obscureText: true,
+              style: GoogleFonts.firaCode(
+                color: AppTheme.textPrimary,
+                fontSize: 14,
+              ),
+              decoration: InputDecoration(
+                hintText: 'password (if required)',
                 prefixIcon: const Icon(
                   Icons.key,
                   color: AppTheme.orange,
@@ -166,29 +149,70 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
           ElevatedButton(
-            onPressed: () {
-              final entered = passwordController.text.trim();
-              if (entered == group.password) {
-                // Password correct — save and join
-                final username = StorageService.getUsername() ?? 'anon';
-                if (!group.members.contains(username)) {
-                  group.members.add(username);
-                }
-                StorageService.saveGroup(group);
+            onPressed: () async {
+              final groupId = groupIdController.text.trim().toUpperCase();
+              final password = passwordController.text.trim();
+
+              if (groupId.isEmpty) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      '> enter a group ID',
+                      style: GoogleFonts.firaCode(fontSize: 12),
+                    ),
+                    backgroundColor: AppTheme.red.withValues(alpha: 0.8),
+                    behavior: SnackBarBehavior.floating,
+                  ),
+                );
+                return;
+              }
+
+              // Check if already a member
+              if (StorageService.isGroupMember(groupId)) {
+                Navigator.of(ctx).pop();
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      '> already a member of this group',
+                      style: GoogleFonts.firaCode(fontSize: 12),
+                    ),
+                    backgroundColor: AppTheme.orange.withValues(alpha: 0.8),
+                    behavior: SnackBarBehavior.floating,
+                  ),
+                );
+                return;
+              }
+
+              final result = await widget.meshController.joinGroupWithCredentials(
+                groupId,
+                password,
+              );
+
+              if (result == 'success') {
                 _loadGroups();
                 Navigator.of(ctx).pop();
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
                     content: Text(
-                      '> joined "${group.name}" successfully',
+                      '> joined group successfully! syncing history...',
                       style: GoogleFonts.firaCode(fontSize: 12),
                     ),
                     backgroundColor: AppTheme.bgCard,
                     behavior: SnackBarBehavior.floating,
                   ),
                 );
-              } else {
-                // Wrong password
+              } else if (result == 'not_found') {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      '> group not found. ensure a peer with this group is nearby.',
+                      style: GoogleFonts.firaCode(fontSize: 12),
+                    ),
+                    backgroundColor: AppTheme.red.withValues(alpha: 0.8),
+                    behavior: SnackBarBehavior.floating,
+                  ),
+                );
+              } else if (result == 'wrong_password') {
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
                     content: Text(
@@ -201,7 +225,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 );
               }
             },
-            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.orange),
+            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.cyan),
             child: Text(
               'JOIN',
               style: GoogleFonts.firaCode(
@@ -213,6 +237,167 @@ class _HomeScreenState extends State<HomeScreen> {
         ],
       ),
     );
+  }
+
+  void _showPeerDetailsModal() {
+    final peers = widget.meshController.connectedPeers;
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppTheme.bgCard,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) => Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(
+                  Icons.wifi_tethering,
+                  color: AppTheme.cyan,
+                  size: 20,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'Connected Peers',
+                  style: GoogleFonts.firaCode(
+                    color: AppTheme.textPrimary,
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const Spacer(),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 2,
+                  ),
+                  decoration: BoxDecoration(
+                    color: AppTheme.cyan.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(
+                    '${peers.length} connected',
+                    style: GoogleFonts.firaCode(
+                      color: AppTheme.cyan,
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            if (peers.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 20),
+                child: Center(
+                  child: Text(
+                    '> no peers connected',
+                    style: GoogleFonts.firaCode(
+                      color: AppTheme.textMuted,
+                      fontSize: 12,
+                    ),
+                  ),
+                ),
+              )
+            else
+              ...peers.map(
+                (peer) => Container(
+                  margin: const EdgeInsets.only(bottom: 8),
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: AppTheme.bgDark,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: AppTheme.border),
+                  ),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 8,
+                        height: 8,
+                        decoration: BoxDecoration(
+                          color: peer.isConnected
+                              ? AppTheme.green
+                              : AppTheme.red,
+                          shape: BoxShape.circle,
+                          boxShadow: [
+                            BoxShadow(
+                              color: peer.isConnected
+                                  ? AppTheme.green
+                                  : AppTheme.red,
+                              blurRadius: 4,
+                              spreadRadius: 1,
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              peer.endpointName,
+                              style: GoogleFonts.firaCode(
+                                color: AppTheme.textPrimary,
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              'ID: ${peer.endpointId}',
+                              style: GoogleFonts.firaCode(
+                                color: AppTheme.textMuted,
+                                fontSize: 9,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Text(
+                            peer.isConnected ? 'ONLINE' : 'OFFLINE',
+                            style: GoogleFonts.firaCode(
+                              color: peer.isConnected
+                                  ? AppTheme.green
+                                  : AppTheme.red,
+                              fontSize: 9,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            'Last: ${_formatTime(peer.lastSeen)}',
+                            style: GoogleFonts.firaCode(
+                              color: AppTheme.textMuted,
+                              fontSize: 8,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _formatTime(DateTime dt) {
+    final now = DateTime.now();
+    final diff = now.difference(dt);
+    if (diff.inSeconds < 60) return '${diff.inSeconds}s ago';
+    if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
+    return '${diff.inHours}h ago';
   }
 
   void _openGroupChat(MeshGroup group) {
@@ -360,8 +545,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
-    _inviteSub?.cancel();
-    _passwordInviteSub?.cancel();
     widget.meshController.removeListener(_onMeshUpdate);
     super.dispose();
   }
@@ -403,37 +586,40 @@ class _HomeScreenState extends State<HomeScreen> {
           ],
         ),
         actions: [
-          // Peer count badge
-          Container(
-            margin: const EdgeInsets.only(right: 4),
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-            decoration: BoxDecoration(
-              color: peerCount > 0
-                  ? AppTheme.cyan.withValues(alpha: 0.12)
-                  : AppTheme.bgCard,
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(
-                color: peerCount > 0 ? AppTheme.cyan : AppTheme.border,
+          // Peer count badge (tappable for details)
+          GestureDetector(
+            onTap: _showPeerDetailsModal,
+            child: Container(
+              margin: const EdgeInsets.only(right: 4),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: peerCount > 0
+                    ? AppTheme.cyan.withValues(alpha: 0.12)
+                    : AppTheme.bgCard,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: peerCount > 0 ? AppTheme.cyan : AppTheme.border,
+                ),
               ),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  Icons.wifi_tethering,
-                  size: 14,
-                  color: peerCount > 0 ? AppTheme.cyan : AppTheme.textMuted,
-                ),
-                const SizedBox(width: 6),
-                Text(
-                  '$peerCount',
-                  style: GoogleFonts.firaCode(
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.wifi_tethering,
+                    size: 14,
                     color: peerCount > 0 ? AppTheme.cyan : AppTheme.textMuted,
-                    fontSize: 12,
-                    fontWeight: FontWeight.bold,
                   ),
-                ),
-              ],
+                  const SizedBox(width: 6),
+                  Text(
+                    '$peerCount',
+                    style: GoogleFonts.firaCode(
+                      color: peerCount > 0 ? AppTheme.cyan : AppTheme.textMuted,
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
           // ? Info button
@@ -498,10 +684,39 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ],
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _createGroup,
-        backgroundColor: AppTheme.green,
-        child: const Icon(Icons.group_add, color: AppTheme.bgDark),
+      floatingActionButton: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          FloatingActionButton.extended(
+            heroTag: 'join',
+            onPressed: _showJoinGroupDialog,
+            backgroundColor: AppTheme.cyan,
+            icon: const Icon(Icons.login, color: AppTheme.bgDark, size: 18),
+            label: Text(
+              'JOIN',
+              style: GoogleFonts.firaCode(
+                color: AppTheme.bgDark,
+                fontSize: 11,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          FloatingActionButton.extended(
+            heroTag: 'create',
+            onPressed: _createGroup,
+            backgroundColor: AppTheme.green,
+            icon: const Icon(Icons.group_add, color: AppTheme.bgDark, size: 18),
+            label: Text(
+              'CREATE',
+              style: GoogleFonts.firaCode(
+                color: AppTheme.bgDark,
+                fontSize: 11,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -815,7 +1030,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           const SizedBox(height: 4),
           Text(
-            'tap + to create one',
+            'tap CREATE or JOIN to get started',
             style: GoogleFonts.firaCode(
               color: AppTheme.textMuted.withValues(alpha: 0.6),
               fontSize: 10,
