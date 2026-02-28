@@ -140,6 +140,52 @@ class StorageService {
     await box.delete(groupId);
   }
 
+  /// Delete all messages in a specific group
+  static Future<void> clearGroupMessages(String groupId) async {
+    final box = Hive.box<ChatMessage>(_messagesBox);
+    final keysToDelete = box.keys.where((key) {
+      final msg = box.get(key);
+      return msg != null && msg.groupId == groupId;
+    }).toList();
+    await box.deleteAll(keysToDelete);
+  }
+
+  /// Delete all broadcast (non-group) messages
+  static Future<void> clearBroadcastMessages() async {
+    final box = Hive.box<ChatMessage>(_messagesBox);
+    final keysToDelete = box.keys.where((key) {
+      final msg = box.get(key);
+      return msg != null && (msg.groupId == null || msg.groupId!.isEmpty);
+    }).toList();
+    await box.deleteAll(keysToDelete);
+  }
+
+  /// Remove a member from a group
+  static Future<void> removeMemberFromGroup(String groupId, String username) async {
+    final group = getGroup(groupId);
+    if (group == null) return;
+    group.members.remove(username);
+    await group.save();
+  }
+
+  /// Rename a group
+  static Future<void> renameGroup(String groupId, String newName) async {
+    final box = Hive.box<MeshGroup>(_groupsBox);
+    final group = box.get(groupId);
+    if (group == null) return;
+    // MeshGroup.name is final, so we need to create a new one
+    final updated = MeshGroup(
+      id: group.id,
+      name: newName,
+      createdBy: group.createdBy,
+      createdAt: group.createdAt,
+      members: group.members,
+      symmetricKey: group.symmetricKey,
+      password: group.password,
+    );
+    await box.put(groupId, updated);
+  }
+
   /// Get the last message in a group for preview
   static ChatMessage? getLastGroupMessage(String groupId) {
     final msgs = getMessages(groupId: groupId);

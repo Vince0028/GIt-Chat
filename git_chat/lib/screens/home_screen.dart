@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -240,155 +241,267 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _showPeerDetailsModal() {
-    final peers = widget.meshController.connectedPeers;
     showModalBottomSheet(
       context: context,
       backgroundColor: AppTheme.bgCard,
+      isScrollControlled: true,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
-      builder: (ctx) => Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                const Icon(
-                  Icons.wifi_tethering,
-                  color: AppTheme.cyan,
-                  size: 20,
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  'Connected Peers',
-                  style: GoogleFonts.firaCode(
-                    color: AppTheme.textPrimary,
-                    fontSize: 14,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                const Spacer(),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 2,
-                  ),
-                  decoration: BoxDecoration(
-                    color: AppTheme.cyan.withValues(alpha: 0.15),
-                    borderRadius: BorderRadius.circular(4),
-                  ),
-                  child: Text(
-                    '${peers.length} connected',
-                    style: GoogleFonts.firaCode(
-                      color: AppTheme.cyan,
-                      fontSize: 10,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            if (peers.isEmpty)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 20),
-                child: Center(
-                  child: Text(
-                    '> no peers connected',
-                    style: GoogleFonts.firaCode(
-                      color: AppTheme.textMuted,
-                      fontSize: 12,
-                    ),
-                  ),
-                ),
-              )
-            else
-              ...peers.map(
-                (peer) => Container(
-                  margin: const EdgeInsets.only(bottom: 8),
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: AppTheme.bgDark,
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: AppTheme.border),
-                  ),
-                  child: Row(
+      builder: (ctx) {
+        // Use a StatefulBuilder + Timer so the modal refreshes every 3s
+        return StatefulBuilder(
+          builder: (innerCtx, setModalState) {
+            // Start a timer that refreshes the modal content
+            Timer? refreshTimer;
+            void startTimer() {
+              refreshTimer?.cancel();
+              refreshTimer = Timer.periodic(
+                const Duration(seconds: 3),
+                (_) {
+                  if (innerCtx.mounted) {
+                    setModalState(() {}); // trigger rebuild with latest data
+                  } else {
+                    refreshTimer?.cancel();
+                  }
+                },
+              );
+            }
+
+            // Schedule timer on first build
+            WidgetsBinding.instance.addPostFrameCallback((_) => startTimer());
+
+            final peers = widget.meshController.connectedPeers;
+
+            return Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // ── Header ──
+                  Row(
                     children: [
+                      const Icon(
+                        Icons.wifi_tethering,
+                        color: AppTheme.cyan,
+                        size: 20,
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        'Connected Peers',
+                        style: GoogleFonts.firaCode(
+                          color: AppTheme.textPrimary,
+                          fontSize: 14,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const Spacer(),
                       Container(
-                        width: 8,
-                        height: 8,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 2,
+                        ),
                         decoration: BoxDecoration(
-                          color: peer.isConnected
-                              ? AppTheme.green
-                              : AppTheme.red,
-                          shape: BoxShape.circle,
-                          boxShadow: [
-                            BoxShadow(
-                              color: peer.isConnected
-                                  ? AppTheme.green
-                                  : AppTheme.red,
-                              blurRadius: 4,
-                              spreadRadius: 1,
-                            ),
-                          ],
+                          color: AppTheme.cyan.withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(4),
                         ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              peer.endpointName,
-                              style: GoogleFonts.firaCode(
-                                color: AppTheme.textPrimary,
-                                fontSize: 12,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            const SizedBox(height: 2),
-                            Text(
-                              'ID: ${peer.endpointId}',
-                              style: GoogleFonts.firaCode(
-                                color: AppTheme.textMuted,
-                                fontSize: 9,
-                              ),
-                            ),
-                          ],
+                        child: Text(
+                          '${peers.length} connected',
+                          style: GoogleFonts.firaCode(
+                            color: AppTheme.cyan,
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
-                      ),
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.end,
-                        children: [
-                          Text(
-                            peer.isConnected ? 'ONLINE' : 'OFFLINE',
-                            style: GoogleFonts.firaCode(
-                              color: peer.isConnected
-                                  ? AppTheme.green
-                                  : AppTheme.red,
-                              fontSize: 9,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          const SizedBox(height: 2),
-                          Text(
-                            'Last: ${_formatTime(peer.lastSeen)}',
-                            style: GoogleFonts.firaCode(
-                              color: AppTheme.textMuted,
-                              fontSize: 8,
-                            ),
-                          ),
-                        ],
                       ),
                     ],
                   ),
-                ),
+                  const SizedBox(height: 16),
+                  if (peers.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 20),
+                      child: Center(
+                        child: Text(
+                          '> no peers connected',
+                          style: GoogleFonts.firaCode(
+                            color: AppTheme.textMuted,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ),
+                    )
+                  else
+                    ...peers.map(
+                      (peer) => Container(
+                        margin: const EdgeInsets.only(bottom: 10),
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: AppTheme.bgDark,
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: AppTheme.border),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            // ── Row 1: Status dot + Name + Online badge ──
+                            Row(
+                              children: [
+                                Container(
+                                  width: 8,
+                                  height: 8,
+                                  decoration: BoxDecoration(
+                                    color: peer.isConnected
+                                        ? AppTheme.green
+                                        : AppTheme.red,
+                                    shape: BoxShape.circle,
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: peer.isConnected
+                                            ? AppTheme.green
+                                            : AppTheme.red,
+                                        blurRadius: 4,
+                                        spreadRadius: 1,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Text(
+                                    peer.endpointName,
+                                    style: GoogleFonts.firaCode(
+                                      color: AppTheme.textPrimary,
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 6,
+                                    vertical: 2,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: (peer.isConnected
+                                            ? AppTheme.green
+                                            : AppTheme.red)
+                                        .withValues(alpha: 0.15),
+                                    borderRadius: BorderRadius.circular(4),
+                                  ),
+                                  child: Text(
+                                    peer.isConnected ? 'ONLINE' : 'OFFLINE',
+                                    style: GoogleFonts.firaCode(
+                                      color: peer.isConnected
+                                          ? AppTheme.green
+                                          : AppTheme.red,
+                                      fontSize: 8,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            // ── Row 2: Device model ──
+                            _peerDetailRow(
+                              Icons.phone_android,
+                              'Device',
+                              peer.deviceModel ?? 'detecting...',
+                              AppTheme.purple,
+                            ),
+                            const SizedBox(height: 4),
+                            // ── Row 3: Estimated distance ──
+                            _peerDetailRow(
+                              Icons.social_distance,
+                              'Distance',
+                              peer.estimatedDistance ?? 'measuring...',
+                              AppTheme.orange,
+                            ),
+                            const SizedBox(height: 4),
+                            // ── Row 4: RTT latency ──
+                            _peerDetailRow(
+                              Icons.speed,
+                              'Latency',
+                              peer.lastRttMs != null
+                                  ? '${peer.lastRttMs}ms RTT'
+                                  : 'measuring...',
+                              AppTheme.cyan,
+                            ),
+                            const SizedBox(height: 4),
+                            // ── Row 5: Endpoint ID + last seen ──
+                            Row(
+                              children: [
+                                Icon(
+                                  Icons.tag,
+                                  color: AppTheme.textMuted,
+                                  size: 12,
+                                ),
+                                const SizedBox(width: 6),
+                                Expanded(
+                                  child: Text(
+                                    peer.endpointId,
+                                    style: GoogleFonts.firaCode(
+                                      color: AppTheme.textMuted,
+                                      fontSize: 8,
+                                    ),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                                Text(
+                                  _formatTime(peer.lastSeen),
+                                  style: GoogleFonts.firaCode(
+                                    color: AppTheme.textMuted,
+                                    fontSize: 8,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  const SizedBox(height: 8),
+                ],
               ),
-          ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  /// Helper: builds a single detail row for the peer card
+  Widget _peerDetailRow(
+    IconData icon,
+    String label,
+    String value,
+    Color color,
+  ) {
+    return Row(
+      children: [
+        Icon(icon, color: color, size: 13),
+        const SizedBox(width: 6),
+        Text(
+          '$label: ',
+          style: GoogleFonts.firaCode(
+            color: AppTheme.textMuted,
+            fontSize: 10,
+          ),
         ),
-      ),
+        Expanded(
+          child: Text(
+            value,
+            style: GoogleFonts.firaCode(
+              color: color,
+              fontSize: 10,
+              fontWeight: FontWeight.bold,
+            ),
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      ],
     );
   }
 
@@ -465,35 +578,71 @@ class _HomeScreenState extends State<HomeScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
-              _infoSection(
-                '🔗 Technology',
+              _infoIconSection(
+                Icons.hub_outlined,
+                'Mesh Technology',
                 AppTheme.cyan,
                 'Uses Google Nearby Connections API with P2P_CLUSTER strategy — a fully decentralised mesh where every device is equal (no server, no internet needed).',
               ),
-              _infoSection(
-                '📡 Radios Used',
+              _infoIconSection(
+                Icons.cell_tower,
+                'Radios Used',
                 AppTheme.green,
-                '• Bluetooth Low Energy (BLE)\n• Bluetooth Classic\n• Wi-Fi Direct (P2P)\n\nAll three are used simultaneously for fastest discovery.',
+                '• Bluetooth Low Energy (BLE)\n• Bluetooth Classic\n• Wi-Fi Direct (P2P)\n\nAll three are used simultaneously for fastest discovery and connection.',
               ),
-              _infoSection(
-                '📏 Range',
+              _infoIconSection(
+                Icons.social_distance,
+                'Range & Distance',
                 AppTheme.orange,
-                '• Bluetooth: ~10–30 m\n• Wi-Fi Direct: ~30–100 m\n\nActual range depends on walls, interference, and device hardware.',
+                '• Bluetooth: ~10–30 m\n• Wi-Fi Direct: ~30–100 m\n\nActual range depends on walls, interference, and device hardware. Peer distance is estimated via RTT ping every 3 seconds.',
               ),
-              _infoSection(
-                '✉️ Message Limit',
-                AppTheme.textPrimary,
-                'Text messages: up to ~31 KB per message (mesh BYTES payload limit). Typical chat messages are well under 1 KB.',
-              ),
-              _infoSection(
-                '🖼️ Image Limit',
+              _infoIconSection(
+                Icons.lock_outline,
+                'Private Groups',
                 AppTheme.purple,
-                'Images are compressed to 300×300 px at 35% quality before sending (~8–25 KB). They are NOT relayed (TTL=0) to avoid flooding the mesh.',
+                'Groups are private by default. Share the Group ID + password with others so they can join. Only members can read messages.',
               ),
-              _infoSection(
-                '🔁 Relay / Mesh Hop',
+              _infoIconSection(
+                Icons.sync,
+                'Message Sync',
+                AppTheme.cyan,
+                'Late joiners automatically sync past messages from connected peers via gossip protocol. No server needed — history lives on the mesh.',
+              ),
+              _infoIconSection(
+                Icons.videocam_outlined,
+                'Video & Audio Calls',
+                AppTheme.green,
+                'Peer-to-peer calls use Wi-Fi Direct for signaling and WebRTC for media. Calls work without internet via a local UDP relay bridge.',
+              ),
+              _infoIconSection(
+                Icons.phone_android,
+                'Peer Info',
+                AppTheme.purple,
+                'Tap the peer count to see connected peers, their device model, estimated distance, and RTT latency — all updated live every 3 seconds.',
+              ),
+              _infoIconSection(
+                Icons.chat_bubble_outline,
+                'Message Limit',
+                AppTheme.textPrimary,
+                'Text: up to ~31 KB per message. Typical chat messages are well under 1 KB.',
+              ),
+              _infoIconSection(
+                Icons.image_outlined,
+                'Image Sharing',
+                AppTheme.orange,
+                'Images are compressed to 300×300 px at 35% quality (~8–25 KB). They are NOT relayed (TTL=0) to avoid flooding the mesh.',
+              ),
+              _infoIconSection(
+                Icons.repeat,
+                'Relay / Mesh Hop',
                 AppTheme.textSecondary,
-                'Text messages have TTL=5, meaning they can hop through up to 5 intermediate devices to reach peers out of direct range — extending the effective mesh range.',
+                'Text messages have TTL=5 — they can hop through up to 5 intermediate devices to reach peers out of direct range, extending the effective mesh.',
+              ),
+              _infoIconSection(
+                Icons.admin_panel_settings_outlined,
+                'Group Management',
+                AppTheme.orange,
+                'Group creators can rename the group, kick members, clear messages, or delete the group entirely via long-press on any group tile.',
               ),
             ],
           ),
@@ -507,6 +656,46 @@ class _HomeScreenState extends State<HomeScreen> {
                 color: AppTheme.cyan,
                 fontSize: 12,
                 fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _infoIconSection(
+      IconData icon, String title, Color color, String body) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(icon, color: color, size: 16),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  title,
+                  style: GoogleFonts.firaCode(
+                    color: color,
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Padding(
+            padding: const EdgeInsets.only(left: 22),
+            child: Text(
+              body,
+              style: GoogleFonts.firaCode(
+                color: AppTheme.textSecondary,
+                fontSize: 11,
+                height: 1.5,
               ),
             ),
           ),
@@ -1043,84 +1232,508 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _showGroupOptions(MeshGroup group) {
     HapticFeedback.mediumImpact();
+    final username = StorageService.getUsername() ?? 'anon';
+    final isAdmin = group.createdBy == username;
+
     showModalBottomSheet(
       context: context,
       backgroundColor: AppTheme.bgCard,
+      isScrollControlled: true,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
-      builder: (ctx) => Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              group.name,
-              style: GoogleFonts.firaCode(
-                color: AppTheme.textPrimary,
-                fontSize: 16,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              'ID: ${group.id}',
-              style: GoogleFonts.firaCode(
-                color: AppTheme.textMuted,
-                fontSize: 11,
-              ),
-            ),
-            const SizedBox(height: 16),
-            ListTile(
-              leading: const Icon(Icons.share, color: AppTheme.cyan),
-              title: Text(
-                'Share to nearby peers',
-                style: GoogleFonts.firaCode(
-                  color: AppTheme.textPrimary,
-                  fontSize: 12,
-                ),
-              ),
-              onTap: () {
-                Navigator.pop(ctx);
-                widget.meshController.sendGroupInvite(group);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text(
-                      '> broadcasting group invite...',
-                      style: GoogleFonts.firaCode(fontSize: 12),
+      builder: (ctx) => StatefulBuilder(
+        builder: (innerCtx, setModalState) {
+          // Re-read group from storage to get latest member list
+          final freshGroup = StorageService.getGroup(group.id) ?? group;
+
+          return Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // ── Header ──
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: AppTheme.purple.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: const Icon(Icons.group,
+                          color: AppTheme.purple, size: 20),
                     ),
-                    backgroundColor: AppTheme.bgCard,
-                    behavior: SnackBarBehavior.floating,
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            freshGroup.name,
+                            style: GoogleFonts.firaCode(
+                              color: AppTheme.textPrimary,
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            'ID: ${freshGroup.id}',
+                            style: GoogleFonts.firaCode(
+                              color: AppTheme.textMuted,
+                              fontSize: 9,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (isAdmin)
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: AppTheme.orange.withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          'ADMIN',
+                          style: GoogleFonts.firaCode(
+                            color: AppTheme.orange,
+                            fontSize: 8,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                const Divider(color: AppTheme.border, height: 1),
+                const SizedBox(height: 12),
+
+                // ── Share credentials ──
+                ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  leading:
+                      const Icon(Icons.copy_all, color: AppTheme.cyan, size: 20),
+                  title: Text(
+                    'Copy Group ID',
+                    style: GoogleFonts.firaCode(
+                        color: AppTheme.textPrimary, fontSize: 12),
                   ),
-                );
-              },
+                  subtitle: Text(
+                    freshGroup.id,
+                    style: GoogleFonts.firaCode(
+                        color: AppTheme.cyan, fontSize: 10),
+                  ),
+                  onTap: () {
+                    Clipboard.setData(ClipboardData(text: freshGroup.id));
+                    Navigator.pop(ctx);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(
+                          '> group ID copied to clipboard!',
+                          style: GoogleFonts.firaCode(fontSize: 12),
+                        ),
+                        backgroundColor: AppTheme.bgCard,
+                        behavior: SnackBarBehavior.floating,
+                      ),
+                    );
+                  },
+                ),
+
+                // ── Broadcast invite ──
+                ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.wifi_tethering,
+                      color: AppTheme.green, size: 20),
+                  title: Text(
+                    'Broadcast Invite to Peers',
+                    style: GoogleFonts.firaCode(
+                        color: AppTheme.textPrimary, fontSize: 12),
+                  ),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    widget.meshController.sendGroupInvite(freshGroup);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(
+                          '> broadcasting group invite...',
+                          style: GoogleFonts.firaCode(fontSize: 12),
+                        ),
+                        backgroundColor: AppTheme.bgCard,
+                        behavior: SnackBarBehavior.floating,
+                      ),
+                    );
+                  },
+                ),
+
+                const SizedBox(height: 8),
+                const Divider(color: AppTheme.border, height: 1),
+                const SizedBox(height: 8),
+
+                // ── Members section ──
+                Text(
+                  'MEMBERS (${freshGroup.members.length})',
+                  style: GoogleFonts.firaCode(
+                    color: AppTheme.textMuted,
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                ...freshGroup.members.map(
+                  (member) => Container(
+                    margin: const EdgeInsets.only(bottom: 6),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: AppTheme.bgDark,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: AppTheme.border),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(
+                          member == freshGroup.createdBy
+                              ? Icons.shield
+                              : Icons.person,
+                          color: member == freshGroup.createdBy
+                              ? AppTheme.orange
+                              : AppTheme.cyan,
+                          size: 16,
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            member,
+                            style: GoogleFonts.firaCode(
+                              color: AppTheme.textPrimary,
+                              fontSize: 11,
+                            ),
+                          ),
+                        ),
+                        if (member == freshGroup.createdBy)
+                          Text(
+                            'OWNER',
+                            style: GoogleFonts.firaCode(
+                              color: AppTheme.orange,
+                              fontSize: 8,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        if (member == username && member != freshGroup.createdBy)
+                          Text(
+                            'YOU',
+                            style: GoogleFonts.firaCode(
+                              color: AppTheme.cyan,
+                              fontSize: 8,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        // Kick button (admin only, can't kick yourself)
+                        if (isAdmin &&
+                            member != username &&
+                            member != freshGroup.createdBy)
+                          GestureDetector(
+                            onTap: () async {
+                              await StorageService.removeMemberFromGroup(
+                                  freshGroup.id, member);
+                              setModalState(() {});
+                              _loadGroups();
+                            },
+                            child: const Padding(
+                              padding: EdgeInsets.only(left: 8),
+                              child: Icon(Icons.person_remove,
+                                  color: AppTheme.red, size: 16),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 8),
+                const Divider(color: AppTheme.border, height: 1),
+                const SizedBox(height: 8),
+
+                // ── Admin actions ──
+                if (isAdmin) ...[
+                  ListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.edit,
+                        color: AppTheme.purple, size: 20),
+                    title: Text(
+                      'Rename Group',
+                      style: GoogleFonts.firaCode(
+                          color: AppTheme.textPrimary, fontSize: 12),
+                    ),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _showRenameGroupDialog(freshGroup);
+                    },
+                  ),
+                  ListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.delete_sweep,
+                        color: AppTheme.orange, size: 20),
+                    title: Text(
+                      'Clear All Messages',
+                      style: GoogleFonts.firaCode(
+                          color: AppTheme.orange, fontSize: 12),
+                    ),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _confirmClearMessages(freshGroup.id, freshGroup.name);
+                    },
+                  ),
+                  ListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.delete_forever,
+                        color: AppTheme.red, size: 20),
+                    title: Text(
+                      'Delete Group',
+                      style: GoogleFonts.firaCode(
+                          color: AppTheme.red, fontSize: 12),
+                    ),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _confirmDeleteGroup(freshGroup);
+                    },
+                  ),
+                ] else ...[
+                  // ── Non-admin: Leave group ──
+                  ListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.logout,
+                        color: AppTheme.red, size: 20),
+                    title: Text(
+                      'Leave Group',
+                      style: GoogleFonts.firaCode(
+                          color: AppTheme.red, fontSize: 12),
+                    ),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      StorageService.deleteGroup(freshGroup.id);
+                      _loadGroups();
+                    },
+                  ),
+                ],
+                const SizedBox(height: 8),
+              ],
             ),
-            ListTile(
-              leading: const Icon(Icons.info_outline, color: AppTheme.orange),
-              title: Text(
-                'Members: ${group.members.join(", ")}',
+          );
+        },
+      ),
+    );
+  }
+
+  void _showRenameGroupDialog(MeshGroup group) {
+    final controller = TextEditingController(text: group.name);
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.bgCard,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: const BorderSide(color: AppTheme.border),
+        ),
+        title: Text(
+          'Rename Group',
+          style: GoogleFonts.firaCode(
+            color: AppTheme.purple,
+            fontSize: 14,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          style: GoogleFonts.firaCode(
+            color: AppTheme.textPrimary,
+            fontSize: 14,
+          ),
+          decoration: InputDecoration(
+            hintText: 'New group name',
+            hintStyle: GoogleFonts.firaCode(
+              color: AppTheme.textMuted,
+              fontSize: 14,
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text(
+              'CANCEL',
+              style: GoogleFonts.firaCode(
+                  color: AppTheme.textMuted, fontSize: 12),
+            ),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              final newName = controller.text.trim();
+              if (newName.isNotEmpty) {
+                await StorageService.renameGroup(group.id, newName);
+                _loadGroups();
+                Navigator.pop(ctx);
+              }
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.purple),
+            child: Text(
+              'RENAME',
+              style: GoogleFonts.firaCode(
+                  fontSize: 12, fontWeight: FontWeight.bold),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _confirmClearMessages(String groupId, String groupName) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.bgCard,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: const BorderSide(color: AppTheme.red),
+        ),
+        title: Row(
+          children: [
+            const Icon(Icons.warning_amber, color: AppTheme.orange, size: 20),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'Clear Messages?',
                 style: GoogleFonts.firaCode(
-                  color: AppTheme.textSecondary,
-                  fontSize: 11,
+                  color: AppTheme.orange,
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
                 ),
               ),
-              onTap: () => Navigator.pop(ctx),
-            ),
-            ListTile(
-              leading: const Icon(Icons.delete_outline, color: AppTheme.red),
-              title: Text(
-                'Leave group',
-                style: GoogleFonts.firaCode(color: AppTheme.red, fontSize: 12),
-              ),
-              onTap: () {
-                Navigator.pop(ctx);
-                StorageService.deleteGroup(group.id);
-                _loadGroups();
-              },
             ),
           ],
         ),
+        content: Text(
+          'Delete all messages in "$groupName"?\nThis cannot be undone.',
+          style: GoogleFonts.firaCode(
+            color: AppTheme.textSecondary,
+            fontSize: 11,
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text(
+              'CANCEL',
+              style: GoogleFonts.firaCode(
+                  color: AppTheme.textMuted, fontSize: 12),
+            ),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              await StorageService.clearGroupMessages(groupId);
+              Navigator.pop(ctx);
+              _loadGroups();
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    '> all messages cleared',
+                    style: GoogleFonts.firaCode(fontSize: 12),
+                  ),
+                  backgroundColor: AppTheme.bgCard,
+                  behavior: SnackBarBehavior.floating,
+                ),
+              );
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.red),
+            child: Text(
+              'DELETE ALL',
+              style: GoogleFonts.firaCode(
+                  fontSize: 12, fontWeight: FontWeight.bold),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _confirmDeleteGroup(MeshGroup group) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.bgCard,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: const BorderSide(color: AppTheme.red),
+        ),
+        title: Row(
+          children: [
+            const Icon(Icons.delete_forever, color: AppTheme.red, size: 20),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'Delete Group?',
+                style: GoogleFonts.firaCode(
+                  color: AppTheme.red,
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ],
+        ),
+        content: Text(
+          'Delete "${group.name}" and all its messages?\nThis cannot be undone.',
+          style: GoogleFonts.firaCode(
+            color: AppTheme.textSecondary,
+            fontSize: 11,
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text(
+              'CANCEL',
+              style: GoogleFonts.firaCode(
+                  color: AppTheme.textMuted, fontSize: 12),
+            ),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              await StorageService.clearGroupMessages(group.id);
+              await StorageService.deleteGroup(group.id);
+              Navigator.pop(ctx);
+              _loadGroups();
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    '> group deleted',
+                    style: GoogleFonts.firaCode(fontSize: 12),
+                  ),
+                  backgroundColor: AppTheme.bgCard,
+                  behavior: SnackBarBehavior.floating,
+                ),
+              );
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.red),
+            child: Text(
+              'DELETE',
+              style: GoogleFonts.firaCode(
+                  fontSize: 12, fontWeight: FontWeight.bold),
+            ),
+          ),
+        ],
       ),
     );
   }

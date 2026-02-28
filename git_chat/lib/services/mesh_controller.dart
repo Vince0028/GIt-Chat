@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
+import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:nearby_connections/nearby_connections.dart';
 import 'package:path_provider/path_provider.dart';
@@ -14,14 +15,18 @@ import '../services/permission_service.dart';
 /// Represents a peer connected via Nearby Connections API
 class MeshPeer {
   final String endpointId;
-  final String endpointName;
+  String endpointName;
   bool isConnected;
   DateTime lastSeen;
+  String? deviceModel;       // e.g. "Samsung Galaxy S21"
+  int? lastRttMs;            // round-trip time in milliseconds
+  String? estimatedDistance;  // human-readable distance label
 
   MeshPeer({
     required this.endpointId,
     required this.endpointName,
     this.isConnected = false,
+    this.deviceModel,
   }) : lastSeen = DateTime.now();
 }
 
@@ -40,6 +45,9 @@ enum MeshPacketType {
   callEnd,
   syncRequest,   // "Here are the message IDs I have — what am I missing?"
   syncResponse,  // "Here are the messages you're missing"
+  peerInfo,      // Device model + metadata exchange after connect
+  ping,          // RTT measurement request
+  pong,          // RTT measurement response
 }
 
 /// A wrapper for all data sent over the mesh
@@ -69,6 +77,16 @@ class MeshController extends ChangeNotifier {
   final Map<String, MeshPeer> _peers = {};
   bool _isAdvertising = false;
   bool _isDiscovering = false;
+
+  // Preserved endpoint names from _onConnectionInit (fixes 'peer' fallback bug)
+  final Map<String, String> _endpointNames = {};
+
+  // Ping/pong for RTT-based distance estimation
+  Timer? _pingTimer;
+  final Map<String, int> _pendingPings = {}; // endpointId -> sentTimestamp
+
+  // Cached device model string
+  String? _localDeviceModel;
 
   // Connection retry settings
   static const int _maxConnectionRetries = 7;
@@ -140,12 +158,32 @@ class MeshController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _pingTimer?.cancel();
     stopMesh();
     _incomingMessages.close();
     _incomingGroupInvites.close();
     _passwordProtectedInvites.close();
     _incomingCallSignals.close();
     super.dispose();
+  }
+
+  /// Fetch device model once and cache it
+  Future<String> _getDeviceModel() async {
+    if (_localDeviceModel != null) return _localDeviceModel!;
+    try {
+      if (Platform.isAndroid) {
+        final info = await DeviceInfoPlugin().androidInfo;
+        _localDeviceModel = '${info.brand} ${info.model}';
+      } else if (Platform.isIOS) {
+        final info = await DeviceInfoPlugin().iosInfo;
+        _localDeviceModel = info.utsname.machine;
+      } else {
+        _localDeviceModel = Platform.operatingSystem;
+      }
+    } catch (_) {
+      _localDeviceModel = 'Unknown';
+    }
+    return _localDeviceModel!;
   }
 
   // ── Mesh Activation ──────────────────────────────────
@@ -207,14 +245,18 @@ class MeshController extends ChangeNotifier {
   }
 
   void stopMesh() {
+    _pingTimer?.cancel();
+    _pingTimer = null;
     Nearby().stopAdvertising();
     Nearby().stopDiscovery();
     Nearby().stopAllEndpoints();
     _isAdvertising = false;
     _isDiscovering = false;
     _peers.clear();
+    _endpointNames.clear();
     _syncedPeers.clear();
     _connectionAttempts.clear();
+    _pendingPings.clear();
     notifyListeners();
   }
 
@@ -265,11 +307,15 @@ class MeshController extends ChangeNotifier {
         }
       },
     );
+    // Preserve the endpoint name for use in _onConnectionResult
+    _endpointNames[id] = info.endpointName;
+
     // Only create a new peer entry if _onConnectionResult hasn't already done so.
     // This avoids overwriting isConnected=true with a stale false value.
     if (!_peers.containsKey(id)) {
       _peers[id] = MeshPeer(endpointId: id, endpointName: info.endpointName);
     } else {
+      _peers[id]!.endpointName = info.endpointName;
       _peers[id]!.lastSeen = DateTime.now();
     }
   }
@@ -277,23 +323,36 @@ class MeshController extends ChangeNotifier {
   void _onConnectionResult(String id, Status status) {
     if (status == Status.CONNECTED) {
       debugPrint('[MESH] Connected to peer: $id!');
+      // Use preserved name from _onConnectionInit, fall back to stored username
+      final name = _endpointNames[id] ?? 'peer';
       if (_peers.containsKey(id)) {
         _peers[id]!.isConnected = true;
         _peers[id]!.lastSeen = DateTime.now();
+        // Fix: ensure name is never 'peer' if we have a real name
+        if (_peers[id]!.endpointName == 'peer' && name != 'peer') {
+          _peers[id]!.endpointName = name;
+        }
       } else {
         _peers[id] = MeshPeer(
           endpointId: id,
-          endpointName: 'peer',
+          endpointName: name,
           isConnected: true,
         );
       }
       notifyListeners();
+
+      // ── Send our device info to the new peer ──
+      _sendPeerInfo(id);
+
+      // ── Start ping timer if not running ──
+      _startPingTimer();
 
       // ── Sync-on-Connect: request message history from this peer ──
       _requestSyncFromPeer(id);
     } else {
       debugPrint('[MESH] Connection failed or rejected: $id');
       _peers.remove(id);
+      _endpointNames.remove(id);
       notifyListeners();
     }
   }
@@ -301,8 +360,15 @@ class MeshController extends ChangeNotifier {
   void _onDisconnected(String id) {
     debugPrint('[MESH] Disconnected from peer: $id');
     _peers.remove(id);
+    _endpointNames.remove(id);
     _syncedPeers.remove(id);
     _connectionAttempts.remove(id);
+    _pendingPings.remove(id);
+    // Stop ping timer if no connected peers left
+    if (connectedPeers.isEmpty) {
+      _pingTimer?.cancel();
+      _pingTimer = null;
+    }
     notifyListeners();
   }
 
@@ -423,6 +489,15 @@ class MeshController extends ChangeNotifier {
             break;
           case MeshPacketType.syncResponse:
             _handleSyncResponse(packet.payload, sourceId);
+            break;
+          case MeshPacketType.peerInfo:
+            _handlePeerInfo(packet.payload, sourceId);
+            break;
+          case MeshPacketType.ping:
+            _handlePing(packet.payload, sourceId);
+            break;
+          case MeshPacketType.pong:
+            _handlePong(packet.payload, sourceId);
             break;
         }
       } else {
@@ -697,6 +772,14 @@ class MeshController extends ChangeNotifier {
     StorageService.saveGroup(group);
     _pendingGroupInvites.remove(groupId);
     notifyListeners();
+
+    // Broadcast join acknowledgment so other peers update their member lists
+    await _sendPacketToPeers(
+      MeshPacket(
+        type: MeshPacketType.groupJoinAck,
+        payload: {'groupId': groupId, 'username': username},
+      ),
+    );
 
     // Request past chat history for this group from connected peers
     await requestGroupSync(groupId);
@@ -1129,6 +1212,115 @@ class MeshController extends ChangeNotifier {
     await _sendPacketToPeers(
       MeshPacket(type: MeshPacketType.syncRequest, payload: payload),
     );
+  }
+
+  // ── Peer Info Exchange ────────────────────────────────
+
+  /// Send our device info to a specific peer right after connecting
+  Future<void> _sendPeerInfo(String peerId) async {
+    final model = await _getDeviceModel();
+    final username = StorageService.getUsername() ?? 'anon';
+    final packet = MeshPacket(
+      type: MeshPacketType.peerInfo,
+      payload: {
+        'username': username,
+        'deviceModel': model,
+      },
+    );
+    try {
+      final bytes = Uint8List.fromList(utf8.encode(jsonEncode(packet.toMap())));
+      await Nearby().sendBytesPayload(peerId, bytes);
+      debugPrint('[MESH] Sent peerInfo to $peerId (model=$model)');
+    } catch (e) {
+      debugPrint('[MESH] Failed to send peerInfo to $peerId: $e');
+    }
+  }
+
+  /// Handle an incoming peerInfo packet — update peer's device model & name
+  void _handlePeerInfo(Map<String, dynamic> data, String sourceId) {
+    final model = data['deviceModel'] as String?;
+    final username = data['username'] as String?;
+    if (_peers.containsKey(sourceId)) {
+      if (model != null) _peers[sourceId]!.deviceModel = model;
+      if (username != null && username.isNotEmpty) {
+        _peers[sourceId]!.endpointName = username;
+      }
+      debugPrint('[MESH] Got peerInfo from $sourceId: model=$model user=$username');
+      notifyListeners();
+    }
+  }
+
+  // ── Ping / Pong — RTT-based distance estimation ─────
+
+  /// Start the periodic ping timer (every 3 seconds)
+  void _startPingTimer() {
+    if (_pingTimer != null) return; // already running
+    _pingTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+      _sendPingToAllPeers();
+    });
+    // Send first ping immediately
+    _sendPingToAllPeers();
+  }
+
+  /// Send a ping to all connected peers
+  void _sendPingToAllPeers() {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final packet = MeshPacket(
+      type: MeshPacketType.ping,
+      payload: {'ts': now},
+    );
+    try {
+      final bytes = Uint8List.fromList(utf8.encode(jsonEncode(packet.toMap())));
+      for (final peer in connectedPeers) {
+        _pendingPings[peer.endpointId] = now;
+        Nearby().sendBytesPayload(peer.endpointId, bytes);
+      }
+    } catch (e) {
+      debugPrint('[MESH] Ping failed: $e');
+    }
+  }
+
+  /// Handle an incoming ping — echo it back as a pong
+  void _handlePing(Map<String, dynamic> data, String sourceId) {
+    final packet = MeshPacket(
+      type: MeshPacketType.pong,
+      payload: {'ts': data['ts']},
+    );
+    try {
+      final bytes = Uint8List.fromList(utf8.encode(jsonEncode(packet.toMap())));
+      Nearby().sendBytesPayload(sourceId, bytes);
+    } catch (e) {
+      debugPrint('[MESH] Pong reply failed: $e');
+    }
+  }
+
+  /// Handle an incoming pong — calculate RTT and estimate distance
+  void _handlePong(Map<String, dynamic> data, String sourceId) {
+    final sentTs = data['ts'] as int?;
+    if (sentTs == null) return;
+
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final rtt = now - sentTs;
+    _pendingPings.remove(sourceId);
+
+    if (_peers.containsKey(sourceId)) {
+      _peers[sourceId]!.lastRttMs = rtt;
+      _peers[sourceId]!.estimatedDistance = _rttToDistance(rtt);
+      _peers[sourceId]!.lastSeen = DateTime.now();
+      notifyListeners();
+    }
+  }
+
+  /// Convert RTT (ms) to a human-readable distance estimate.
+  /// Nearby Connections adds heavy protocol overhead (BLE stack, JNI,
+  /// serialisation) so even point-blank RTT is typically 100-300 ms.
+  String _rttToDistance(int rttMs) {
+    if (rttMs < 200) return '~1-2m (very close)';
+    if (rttMs < 400) return '~3-5m (nearby)';
+    if (rttMs < 700) return '~5-10m (close)';
+    if (rttMs < 1200) return '~10-20m (moderate)';
+    if (rttMs < 2000) return '~20-30m (far)';
+    return '~30m+ (very far)';
   }
 
   // ── Group Utilities ──────────────────────────────────

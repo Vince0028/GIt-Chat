@@ -263,13 +263,16 @@ class CallService extends ChangeNotifier {
       // Bind TCP to the p2p0 IP so it's reachable on that interface
       final bindAddr = _localP2pIp ?? _groupOwnerIp;
       _log('Starting TCP server on $bindAddr:$_signalingPort...');
+      // Close any lingering server from a previous call
+      try { _tcpServer?.close(); } catch (_) {}
+      _tcpServer = null;
       try {
         _tcpServer = await ServerSocket.bind(
-          InternetAddress(bindAddr), _signalingPort);
+          InternetAddress(bindAddr), _signalingPort, shared: true);
       } catch (e) {
         _log('Bind to $bindAddr failed ($e), falling back to 0.0.0.0');
         _tcpServer = await ServerSocket.bind(
-          InternetAddress.anyIPv4, _signalingPort);
+          InternetAddress.anyIPv4, _signalingPort, shared: true);
       }
       _log('TCP server listening — waiting for callee...');
 

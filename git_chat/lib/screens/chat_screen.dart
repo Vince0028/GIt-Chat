@@ -42,6 +42,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   String _username = '';
   StreamSubscription<ChatMessage>? _incomingSub;
   CallService? _callService;
+  bool _clearCooldown = false;
 
   void _showTopNotification(
     String message, {
@@ -802,9 +803,11 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           icon: const Icon(
             Icons.phone_outlined,
             color: AppTheme.green,
-            size: 22,
+            size: 20,
           ),
           tooltip: 'Audio call',
+          padding: const EdgeInsets.symmetric(horizontal: 6),
+          constraints: const BoxConstraints(),
           onPressed: _callService == null
               ? null
               : () {
@@ -814,7 +817,6 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                       builder: (_) => CallScreen(callService: _callService!),
                     ),
                   );
-                  // Start call AFTER navigating so debug log is visible
                   _callService!.startCall(video: false);
                 },
         ),
@@ -823,9 +825,11 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           icon: const Icon(
             Icons.videocam_outlined,
             color: AppTheme.cyan,
-            size: 22,
+            size: 20,
           ),
           tooltip: 'Video call',
+          padding: const EdgeInsets.symmetric(horizontal: 6),
+          constraints: const BoxConstraints(),
           onPressed: _callService == null
               ? null
               : () {
@@ -835,55 +839,209 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                       builder: (_) => CallScreen(callService: _callService!),
                     ),
                   );
-                  // Start call AFTER navigating so debug log is visible
                   _callService!.startCall(video: true);
                 },
         ),
-        if (widget.isGroupChat)
-          IconButton(
-            icon: const Icon(Icons.share, color: AppTheme.cyan),
-            tooltip: 'Invite peers',
-            onPressed: () {
-              final group = StorageService.getGroup(widget.groupId!);
-              if (group != null) {
-                widget.meshController?.sendGroupInvite(group);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text(
-                      '> broadcasting group invite to nearby peers...',
-                      style: GoogleFonts.firaCode(fontSize: 12),
-                    ),
-                    backgroundColor: AppTheme.bgCard,
-                    behavior: SnackBarBehavior.floating,
-                  ),
-                );
-              }
-            },
+        const SizedBox(width: 4),
+        PopupMenuButton<String>(
+          icon: const Icon(Icons.more_vert, color: AppTheme.textMuted, size: 20),
+          color: AppTheme.bgCard,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+            side: const BorderSide(color: AppTheme.border),
           ),
-        IconButton(
-          icon: const Icon(Icons.bluetooth_searching, color: AppTheme.cyan),
-          tooltip: 'Reconnect peers',
-          onPressed: () async {
-            final peers = widget.meshController?.connectedPeers.length ?? 0;
-            if (peers > 0) {
-              _showTopNotification(
-                '$peers peer(s) connected',
-                color: AppTheme.cyan,
-                icon: Icons.bluetooth_connected,
-              );
-            } else {
-              _showTopNotification(
-                'Searching for peers...',
-                color: AppTheme.orange,
-                icon: Icons.bluetooth_searching,
-              );
-              widget.meshController?.stopMesh();
-              await Future.delayed(const Duration(milliseconds: 500));
-              await widget.meshController?.startMesh();
+          onSelected: (value) async {
+            switch (value) {
+              case 'clear':
+                if (_clearCooldown) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(
+                        '> please wait before clearing again...',
+                        style: GoogleFonts.firaCode(fontSize: 12),
+                      ),
+                      backgroundColor: AppTheme.bgCard,
+                      behavior: SnackBarBehavior.floating,
+                    ),
+                  );
+                  return;
+                }
+                _confirmClearAllMessages();
+                break;
+              case 'invite':
+                final group = StorageService.getGroup(widget.groupId!);
+                if (group != null) {
+                  widget.meshController?.sendGroupInvite(group);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(
+                        '> broadcasting group invite to nearby peers...',
+                        style: GoogleFonts.firaCode(fontSize: 12),
+                      ),
+                      backgroundColor: AppTheme.bgCard,
+                      behavior: SnackBarBehavior.floating,
+                    ),
+                  );
+                }
+                break;
+              case 'reconnect':
+                final peers = widget.meshController?.connectedPeers.length ?? 0;
+                if (peers > 0) {
+                  _showTopNotification(
+                    '$peers peer(s) connected',
+                    color: AppTheme.cyan,
+                    icon: Icons.bluetooth_connected,
+                  );
+                } else {
+                  _showTopNotification(
+                    'Searching for peers...',
+                    color: AppTheme.orange,
+                    icon: Icons.bluetooth_searching,
+                  );
+                  widget.meshController?.stopMesh();
+                  await Future.delayed(const Duration(milliseconds: 500));
+                  await widget.meshController?.startMesh();
+                }
+                break;
             }
           },
+          itemBuilder: (_) => [
+            if (widget.isGroupChat)
+              PopupMenuItem(
+                value: 'invite',
+                child: Row(
+                  children: [
+                    const Icon(Icons.share, color: AppTheme.cyan, size: 18),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Invite Peers',
+                      style: GoogleFonts.firaCode(
+                        color: AppTheme.textPrimary,
+                        fontSize: 11,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            PopupMenuItem(
+              value: 'reconnect',
+              child: Row(
+                children: [
+                  const Icon(Icons.bluetooth_searching, color: AppTheme.cyan, size: 18),
+                  const SizedBox(width: 8),
+                  Text(
+                    'Reconnect Peers',
+                    style: GoogleFonts.firaCode(
+                      color: AppTheme.textPrimary,
+                      fontSize: 11,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            PopupMenuItem(
+              value: 'clear',
+              enabled: !_clearCooldown,
+              child: Row(
+                children: [
+                  Icon(Icons.delete_sweep,
+                      color: _clearCooldown ? AppTheme.textMuted : AppTheme.red,
+                      size: 18),
+                  const SizedBox(width: 8),
+                  Text(
+                    _clearCooldown ? 'Clear (wait...)' : 'Clear All Messages',
+                    style: GoogleFonts.firaCode(
+                      color: _clearCooldown ? AppTheme.textMuted : AppTheme.red,
+                      fontSize: 11,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
       ],
+    );
+  }
+
+  void _confirmClearAllMessages() {
+    final chatName = widget.isGroupChat
+        ? widget.groupName ?? 'this group'
+        : 'Global Chat';
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.bgCard,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: const BorderSide(color: AppTheme.red),
+        ),
+        title: Row(
+          children: [
+            const Icon(Icons.warning_amber, color: AppTheme.orange, size: 20),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'Clear All Messages?',
+                style: GoogleFonts.firaCode(
+                  color: AppTheme.orange,
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ],
+        ),
+        content: Text(
+          'Delete all messages in "$chatName"?\nThis cannot be undone.',
+          style: GoogleFonts.firaCode(
+            color: AppTheme.textSecondary,
+            fontSize: 11,
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text(
+              'CANCEL',
+              style: GoogleFonts.firaCode(
+                  color: AppTheme.textMuted, fontSize: 12),
+            ),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              if (widget.isGroupChat) {
+                await StorageService.clearGroupMessages(widget.groupId!);
+              } else {
+                await StorageService.clearBroadcastMessages();
+              }
+              Navigator.pop(ctx);
+              _loadMessages();
+              // Start 10-second cooldown
+              setState(() => _clearCooldown = true);
+              Timer(const Duration(seconds: 10), () {
+                if (mounted) setState(() => _clearCooldown = false);
+              });
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    '> all messages cleared',
+                    style: GoogleFonts.firaCode(fontSize: 12),
+                  ),
+                  backgroundColor: AppTheme.bgCard,
+                  behavior: SnackBarBehavior.floating,
+                ),
+              );
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.red),
+            child: Text(
+              'DELETE ALL',
+              style: GoogleFonts.firaCode(
+                  fontSize: 12, fontWeight: FontWeight.bold),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
